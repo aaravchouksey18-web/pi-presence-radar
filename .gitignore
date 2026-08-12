@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# arduino / platformio
+firmware/.pio/
+firmware/build/
+build/
+.pio/
+
+# secrets / local config
+pi/*.env
+firmware/*/config.h
+
+# os
+.DS_Store
