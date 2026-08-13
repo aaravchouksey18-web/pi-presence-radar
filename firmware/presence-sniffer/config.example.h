@@ -16,5 +16,5 @@
 
 // burst-cycle sniffing: the ESP8266 is single-radio, so capture in short
 // bursts and let the radio breathe between them (keeps the station alive).
-#define SNIFF_BURST_ON_MS  200       // radio in capture mode
-#define SNIFF_BURST_OFF_MS 300       // radio free: beacons / ARP / TCP
+#define SNIFF_BURST_ON_MS  100       // radio in capture mode
+#define SNIFF_BURST_OFF_MS 900       // radio free: beacons / ARP / TCP

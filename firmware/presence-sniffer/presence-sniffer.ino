@@ -20,11 +20,13 @@ extern "C" {
 #define SUBTYPE_PROBE_REQ 4
 
 // burst-cycle knobs (config.h can override)
+// Capture burns CPU and makes the single-radio station deaf, so keep it
+// around 10% duty: 100ms listening, 900ms of radio breathing.
 #ifndef SNIFF_BURST_ON_MS
-#define SNIFF_BURST_ON_MS  200   // radio in capture mode
+#define SNIFF_BURST_ON_MS  100   // radio in capture mode
 #endif
 #ifndef SNIFF_BURST_OFF_MS
-#define SNIFF_BURST_OFF_MS 300   // radio free: beacons / ARP / TCP breathe
+#define SNIFF_BURST_OFF_MS 900   // radio free: beacons / ARP / TCP breathe
 #endif
 #ifndef PUBLISH_GAP_MS
 #define PUBLISH_GAP_MS 10000     // min gap between sightings of same MAC
@@ -48,6 +50,10 @@ PubSubClient mqtt(net);
 
 static bool burst_active = false;
 static uint32_t burst_until = 0;
+
+// channel-activity counters (reported on the serial monitor)
+static uint32_t burst_frames = 0;   // every 802.11 frame the radio catches
+static uint32_t burst_probes = 0;   // probe requests addressed to the table
 
 // --- 802.11 helpers --------------------------------------------------------
 
@@ -76,12 +82,14 @@ static void parse_ssid(uint8_t *frame, uint16_t len, char *out, size_t out_sz) {
 
 static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
   if (len < 24) return;
+  burst_frames++;
   if (frame_type(buf) != FRAME_TYPE_MGMT)      return;
   if (frame_subtype(buf) != SUBTYPE_PROBE_REQ) return;
 
   const uint8_t *mac = &buf[10];         // address 2 == transmitter
   uint32_t now = millis();
 
+  burst_probes++;
   for (int i = 0; i < SEEN_MAX; i++) {
     if (seen[i].last_pub != 0 && memcmp(seen[i].mac, mac, 6) == 0) {
       seen[i].last_seen = now;
@@ -174,6 +182,9 @@ void setup() {
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setBufferSize(256);
+  mqtt.setKeepAlive(30);       // promise to ping every 30s, not 15 — the
+                               // radio is deaf during bursts, give the
+                               // broker more slack before it reaps us
 }
 
 void loop() {
@@ -212,6 +223,18 @@ void loop() {
       burst_active = false;
       burst_until = now + SNIFF_BURST_OFF_MS;
       publish_sightings();         // radio quiet: safe to talk TCP
+      report_channel();            // show channel-6 traffic on the monitor
     }
   }
+}
+
+// print channel activity every ~5s so the serial monitor has a pulse
+static void report_channel() {
+  static uint32_t last_report = 0;
+  uint32_t now = millis();
+  if (now - last_report < 5000) return;
+  Serial.printf("[sniff] ch%d: %u frames caught, %u probes seen\n",
+                SNIFF_CHANNEL, burst_frames, burst_probes);
+  last_report = now;
+  burst_frames = burst_probes = 0;
 }
