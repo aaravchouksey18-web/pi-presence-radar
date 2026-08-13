@@ -1,11 +1,14 @@
 // presence-sniffer.ino
 // Passive 802.11 probe-request sniffer for pi-presence-radar.
 //
-// v2 — burst-cycle sniffing. The ESP8266 has a single radio: long periods
-// of promiscuous capture make the station deaf (it misses beacons, ARP and
-// TCP ACKs and drops off the network). So sensing runs in short bursts,
-// MQTT connects first on a clean radio, and publishes happen only in the
-// radio-free windows. See docs/build-log.md.
+// v2.2 — session sniffing. Promiscuous capture on this single radio doesn't
+// just delay packets — it kills the station's whole network stack (even at
+// 10% duty the board stopped answering ARP and never recovered). So the
+// board alternates SNIFF sessions (radio fully in capture mode) with TALK
+// sessions (radio clean, stack recovers, sightings phoned home). MQTT
+// connects first on a clean radio; on boot and after every session the
+// board self-heals: stick dead >10s and it bounces the WiFi stack.
+// See docs/build-log.md.
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -19,14 +22,15 @@ extern "C" {
 #define FRAME_TYPE_MGMT   0
 #define SUBTYPE_PROBE_REQ 4
 
-// burst-cycle knobs (config.h can override)
-// Capture burns CPU and makes the single-radio station deaf, so keep it
-// around 10% duty: 100ms listening, 900ms of radio breathing.
-#ifndef SNIFF_BURST_ON_MS
-#define SNIFF_BURST_ON_MS  100   // radio in capture mode
+// session-state knobs (config.h can override)
+// The single-radio station dies (and stays dead) during promiscuous capture,
+// so the board alternates: SNIFF sessions capture, TALK sessions give the
+// stack a full breathing window and phone sightings home.
+#ifndef SNIFF_DURATION_MS
+#define SNIFF_DURATION_MS 4000   // radio in capture mode, contiguous
 #endif
-#ifndef SNIFF_BURST_OFF_MS
-#define SNIFF_BURST_OFF_MS 900   // radio free: beacons / ARP / TCP breathe
+#ifndef SNIFF_GAP_MS
+#define SNIFF_GAP_MS 8000        // radio free: full stack recovery + MQTT
 #endif
 #ifndef PUBLISH_GAP_MS
 #define PUBLISH_GAP_MS 10000     // min gap between sightings of same MAC
@@ -48,8 +52,11 @@ static seen_t seen[SEEN_MAX];
 WiFiClient net;
 PubSubClient mqtt(net);
 
-static bool burst_active = false;
-static uint32_t burst_until = 0;
+// session state machine: SS_SNIFF captures, SS_TALK phones home
+enum { SS_SNIFF, SS_TALK };
+static uint8_t session = SS_TALK;      // start quiet so MQTT connects first
+static uint32_t session_until = 0;
+static uint8_t clean_fail = 0;         // consecutive clean-radio MQTT failures
 
 // channel-activity counters (reported on the serial monitor)
 static uint32_t burst_frames = 0;   // every 802.11 frame the radio catches
@@ -150,6 +157,7 @@ static void publish_sightings() {
 static bool mqtt_connect() {
   StaticJsonDocument<96> doc;
   doc["board"] = BOARD_ID;
+  doc["online"] = false;              // LWT: published if we die without saying bye
   char will[96];
   serializeJson(doc, will, sizeof(will));
   return mqtt.connect(BOARD_ID, "presence/online", 1, true, will);
@@ -182,48 +190,66 @@ void setup() {
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setBufferSize(256);
-  mqtt.setKeepAlive(30);       // promise to ping every 30s, not 15 — the
-                               // radio is deaf during bursts, give the
-                               // broker more slack before it reaps us
+  mqtt.setKeepAlive(60);       // the stack dies during capture sessions;
+                               // 60s gives the TALK windows room to revive
+                               // it and get a PINGREQ out in time
 }
 
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     digitalWrite(LED_BUILTIN, LOW);
+    static uint32_t wd_since = 0;
+    if (wd_since == 0) wd_since = millis();
+    else if (millis() - wd_since > 10000) {   // stuck >10s: bounce the stack
+      wd_since = 0;
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      Serial.println("wifi bounced");
+    }
     delay(1000);
     return;
   }
 
   if (!mqtt.connected()) {
     digitalWrite(LED_BUILTIN, LOW);
-    if (burst_active) {            // make sure capture is off before any TCP
-      wifi_promiscuous_enable(false);
-      burst_active = false;
-    }
+    wifi_promiscuous_enable(false);   // dial out on a clean radio
+    session = SS_TALK;
+    session_until = millis() + SNIFF_GAP_MS;
     if (mqtt_connect()) {
       Serial.printf("mqtt connected to %s:%d\n", MQTT_HOST, MQTT_PORT);
+      // retained online: the offline will replaces it on unexpected death,
+      // so the dashboard never shows a stale state
+      mqtt.publish("presence/online",
+                   "{\"board\":\"" BOARD_ID "\",\"online\":true}", true);
       digitalWrite(LED_BUILTIN, HIGH);
+      clean_fail = 0;
+    } else if (++clean_fail >= 3) {
+      Serial.println("mqtt stuck on clean radio: bouncing wifi");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      clean_fail = 0;
     }
     delay(2000);
     return;
   }
+  clean_fail = 0;
 
   mqtt.loop();
 
   uint32_t now = millis();
-  if (!burst_active) {
-    if (now >= burst_until) {
-      wifi_promiscuous_enable(true);
-      burst_active = true;
-      burst_until = now + SNIFF_BURST_ON_MS;
+  if (session == SS_SNIFF) {
+    if (now >= session_until) {
+      wifi_promiscuous_enable(false);
+      session = SS_TALK;
+      session_until = now + SNIFF_GAP_MS;
+      publish_sightings();          // queue drained on a quiet radio
+      report_channel();
     }
   } else {
-    if (now >= burst_until) {
-      wifi_promiscuous_enable(false);
-      burst_active = false;
-      burst_until = now + SNIFF_BURST_OFF_MS;
-      publish_sightings();         // radio quiet: safe to talk TCP
-      report_channel();            // show channel-6 traffic on the monitor
+    if (now >= session_until) {
+      wifi_promiscuous_enable(true);
+      session = SS_SNIFF;
+      session_until = now + SNIFF_DURATION_MS;
     }
   }
 }

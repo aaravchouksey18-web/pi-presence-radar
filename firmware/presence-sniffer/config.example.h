@@ -14,7 +14,8 @@
 
 #define PUBLISH_GAP_MS 10000         // min gap between sightings of same MAC
 
-// burst-cycle sniffing: the ESP8266 is single-radio, so capture in short
-// bursts and let the radio breathe between them (keeps the station alive).
-#define SNIFF_BURST_ON_MS  100       // radio in capture mode
-#define SNIFF_BURST_OFF_MS 900       // radio free: beacons / ARP / TCP
+// session sniffing: promiscuous capture kills the single-radio station's
+// network stack (even at 10% duty), so the board captures in sessions and
+// phones sightings home between them.
+#define SNIFF_DURATION_MS 4000       // radio in capture mode, contiguous
+#define SNIFF_GAP_MS 8000            // radio free: stack recovery + MQTT
