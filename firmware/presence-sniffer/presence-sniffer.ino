@@ -1,82 +1,91 @@
 // presence-sniffer.ino
 // Passive 802.11 probe-request sniffer for pi-presence-radar.
 //
-// v2.2 — session sniffing. Promiscuous capture on this single radio doesn't
-// just delay packets — it kills the station's whole network stack (even at
-// 10% duty the board stopped answering ARP and never recovered). So the
-// board alternates SNIFF sessions (radio fully in capture mode) with TALK
-// sessions (radio clean, stack recovers, sightings phoned home). MQTT
-// connects first on a clean radio; on boot and after every session the
-// board self-heals: stick dead >10s and it bounces the WiFi stack.
-// See docs/build-log.md.
+// v3 — "offline-first sensor". Experiment E2 proved promiscuous capture
+// permanently kills the ESP8266 station's TX: even on a clean radio, at any
+// duty cycle, after the first capture session the board cannot send a single
+// packet — only a fresh boot restores the stack (and a fresh boot ALWAYS
+// connects). So the board stopped trying to stay connected while sniffing.
+// Each cycle: boot fresh, phone home the previous session's sightings, sniff,
+// stash results in RTC memory (survives reboot), then reboot. RTC storage
+// also gives at-least-once delivery — sightings are only cleared after the
+// broker acknowledges all of them. See docs/build-log.md.
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 extern "C" {
-#include <user_interface.h>   // promiscuous receive API
+#include <user_interface.h>   // promiscuous RX + RTC memory API
 }
 
 #include "config.h"
 
-// --- TEMP EXPERIMENT E2 ------------------------------------------------------
-// Keepalive-only client on channel 6, zero capture. Three firmware versions
-// all connected once at boot then fell TCP-silent forever, scaling exactly
-// with keepalive (22s/46s/90s) regardless of duty cycle. Question: is it
-// wifi_set_channel(6) alone, or promiscuous mode? Flip this off for the real
-// firmware after the experiment.
-#define SNIFFER_DISABLED
-// ----------------------------------------------------------------------------
-
 #define FRAME_TYPE_MGMT   0
 #define SUBTYPE_PROBE_REQ 4
 
-// session-state knobs (config.h can override)
-// The single-radio station dies (and stays dead) during promiscuous capture,
-// so the board alternates: SNIFF sessions capture, TALK sessions give the
-// stack a full breathing window and phone sightings home.
-#ifndef SNIFF_DURATION_MS
-#define SNIFF_DURATION_MS 4000   // radio in capture mode, contiguous
+// cycle knobs (config.h can override)
+#ifndef SNIFF_SESSION_MS
+#define SNIFF_SESSION_MS 15000   // radio in capture mode before the reboot
 #endif
-#ifndef SNIFF_GAP_MS
-#define SNIFF_GAP_MS 8000        // radio free: full stack recovery + MQTT
-#endif
-#ifndef PUBLISH_GAP_MS
-#define PUBLISH_GAP_MS 10000     // min gap between sightings of same MAC
+#ifndef IDLE_MS
+#define IDLE_MS 6000             // clean-radio window after boot, pre-sniff
 #endif
 
 // ---------------------------------------------------------------------------
-// seen table: filled by the sniffer callback during a burst, drained by
-// publish_sightings() in the quiet window. No TCP ever happens mid-capture.
+// RTC queue: pending sightings survive the reboot. 256 bytes total:
+// 1 magic + 1 count + 6 slots of {6 mac + 32 ssid}.
+// ---------------------------------------------------------------------------
+#define RTC_SLOTS 6
+#define RTC_MAGIC 0xA5
+#define RTC_ADDR  64          // user RTC memory starts here on ESP8266
+
+struct rtc_slot_t { uint8_t mac[6]; char ssid[32]; };
+struct rtc_q_t {
+  uint8_t magic;              // RTC_MAGIC means the queue is valid
+  uint8_t count;
+  rtc_slot_t slots[RTC_SLOTS];
+};
+
+static void rtc_read(rtc_q_t *q) {
+  if (!system_rtc_mem_read(RTC_ADDR, q, sizeof(rtc_q_t)) || q->magic != RTC_MAGIC) {
+    memset(q, 0, sizeof(rtc_q_t));   // first boot / corrupted: start empty
+  }
+}
+
+static void rtc_write(const rtc_q_t *q) {
+  rtc_q_t tmp = *q;
+  system_rtc_mem_write(RTC_ADDR, &tmp, sizeof(rtc_q_t));
+}
+
+static void rtc_clear() {
+  rtc_q_t q;
+  memset(&q, 0, sizeof(q));
+  q.magic = RTC_MAGIC;
+  rtc_write(&q);
+}
+
+// ---------------------------------------------------------------------------
+// in-RAM seen table, filled by the sniffer callback during a capture session
 // ---------------------------------------------------------------------------
 #define SEEN_MAX 24
 struct seen_t {
   uint8_t mac[6];
-  uint32_t last_seen;   // millis() of the newest probe in a burst
-  uint32_t last_pub;    // millis() of the last publish for this MAC
+  uint32_t last_seen;         // millis() of the newest probe this session
   char ssid[33];
 };
 static seen_t seen[SEEN_MAX];
+static uint32_t burst_frames = 0;   // every 802.11 frame the radio caught
+static uint32_t burst_probes = 0;   // probe requests that hit the table
 
 WiFiClient net;
 PubSubClient mqtt(net);
-
-// session state machine: SS_SNIFF captures, SS_TALK phones home
-enum { SS_SNIFF, SS_TALK };
-static uint8_t session = SS_TALK;      // start quiet so MQTT connects first
-static uint32_t session_until = 0;
-static uint8_t clean_fail = 0;         // consecutive clean-radio MQTT failures
-
-// channel-activity counters (reported on the serial monitor)
-static uint32_t burst_frames = 0;   // every 802.11 frame the radio catches
-static uint32_t burst_probes = 0;   // probe requests addressed to the table
 
 // --- 802.11 helpers --------------------------------------------------------
 
 static uint8_t frame_type(uint8_t *f)    { return (f[0] >> 2) & 0x03; }
 static uint8_t frame_subtype(uint8_t *f) { return (f[0] >> 4) & 0x0f; }
 
-// pull the SSID out of a probe-request body (tagged parameters, tag id 0)
+// pull the SSID out of a probe-request body (tagged params, tag id 0)
 static void parse_ssid(uint8_t *frame, uint16_t len, char *out, size_t out_sz) {
   size_t off = 24;                       // 802.11 header on management frames
   while (off + 2 <= len) {
@@ -107,58 +116,70 @@ static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
 
   burst_probes++;
   for (int i = 0; i < SEEN_MAX; i++) {
-    if (seen[i].last_pub != 0 && memcmp(seen[i].mac, mac, 6) == 0) {
+    if (seen[i].last_seen != 0 && memcmp(seen[i].mac, mac, 6) == 0) {
       seen[i].last_seen = now;
       if (!seen[i].ssid[0]) parse_ssid(buf, len, seen[i].ssid, sizeof(seen[i].ssid));
       return;
     }
   }
   for (int i = 0; i < SEEN_MAX; i++) {
-    if (seen[i].last_pub == 0) {         // fresh slot
+    if (seen[i].last_seen == 0) {        // fresh slot
       memcpy(seen[i].mac, mac, 6);
-      seen[i].last_seen   = now;
-      seen[i].last_pub    = now;
+      seen[i].last_seen = now;
       parse_ssid(buf, len, seen[i].ssid, sizeof(seen[i].ssid));
       return;
     }
   }
-  // table full: recycle the slot whose sighting was published longest ago
+  // table full: recycle the slot whose sighting was captured longest ago
   int oldest = 0;
   for (int i = 1; i < SEEN_MAX; i++)
-    if (seen[i].last_pub < seen[oldest].last_pub) oldest = i;
+    if (seen[i].last_seen < seen[oldest].last_seen) oldest = i;
   memcpy(seen[oldest].mac, mac, 6);
   seen[oldest].last_seen = now;
   parse_ssid(buf, len, seen[oldest].ssid, sizeof(seen[oldest].ssid));
 }
 
-// --- publish, only with a clean radio -----------------------------------------
+// --- publish the RTC queue right after boot (clean radio, fresh stack) --------
 
-static void publish_sightings() {
-  uint32_t now = millis();
-  int n = 0;
-  for (int i = 0; i < SEEN_MAX; i++) {
-    if (seen[i].last_pub == 0 || seen[i].last_seen == 0) continue;
-    if (now - seen[i].last_pub < PUBLISH_GAP_MS) continue;
+static void publish_queue() {
+  static rtc_q_t q;
+  rtc_read(&q);
+  if (q.count == 0) return;
 
+  int sent = 0;
+  for (int i = 0; i < q.count; i++) {
     StaticJsonDocument<192> doc;
     doc["board"] = BOARD_ID;
     char mac_s[18];
     snprintf(mac_s, sizeof(mac_s), "%02x:%02x:%02x:%02x:%02x:%02x",
-             seen[i].mac[0], seen[i].mac[1], seen[i].mac[2],
-             seen[i].mac[3], seen[i].mac[4], seen[i].mac[5]);
+             q.slots[i].mac[0], q.slots[i].mac[1], q.slots[i].mac[2],
+             q.slots[i].mac[3], q.slots[i].mac[4], q.slots[i].mac[5]);
     doc["mac"] = mac_s;
-    if (seen[i].ssid[0]) doc["ssid"] = seen[i].ssid;
+    if (q.slots[i].ssid[0]) doc["ssid"] = q.slots[i].ssid;
 
     char payload[192];
     serializeJson(doc, payload, sizeof(payload));
-    mqtt.publish("presence/sighting", payload);
-
-    seen[i].last_pub = now;
-    seen[i].last_seen = 0;
-    seen[i].ssid[0] = '\0';
-    n++;
+    if (mqtt.publish("presence/sighting", payload)) sent++;
   }
-  if (n > 0) Serial.printf("sightings flushed: %d\n", n);
+  Serial.printf("published %d/%d queued sightings\n", sent, q.count);
+  if (sent == q.count) rtc_clear();       // broker took them all: safe to drop
+}
+
+// --- end of capture session: commit fresh sightings into the RTC queue -------
+
+static void commit_queue() {
+  static rtc_q_t q;
+  rtc_read(&q);
+  for (int i = 0; i < SEEN_MAX && q.count < RTC_SLOTS; i++) {
+    if (seen[i].last_seen == 0) continue;         // nothing new this session
+    memcpy(q.slots[q.count].mac, seen[i].mac, 6);
+    snprintf(q.slots[q.count].ssid, sizeof(q.slots[q.count].ssid), "%s",
+             seen[i].ssid);
+    q.count++;
+    seen[i].last_seen = 0;
+  }
+  q.magic = RTC_MAGIC;
+  rtc_write(&q);
 }
 
 // --- MQTT --------------------------------------------------------------------
@@ -166,7 +187,7 @@ static void publish_sightings() {
 static bool mqtt_connect() {
   StaticJsonDocument<96> doc;
   doc["board"] = BOARD_ID;
-  doc["online"] = false;              // LWT: published if we die without saying bye
+  doc["online"] = false;              // LWT: published if we die mid-cycle
   char will[96];
   serializeJson(doc, will, sizeof(will));
   return mqtt.connect(BOARD_ID, "presence/online", 1, true, will);
@@ -174,10 +195,15 @@ static bool mqtt_connect() {
 
 // -----------------------------------------------------------------------------
 
+enum { PH_HOME, PH_SNIFF };
+static uint8_t phase = PH_HOME;
+static uint32_t phase_until = 0;
+
 void setup() {
   Serial.begin(115200);
   delay(200);
   pinMode(LED_BUILTIN, OUTPUT);
+  Serial.println("boot");
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -187,97 +213,53 @@ void setup() {
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) delay(250);
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("wifi failed, retrying in loop()");
+    Serial.println("wifi failed this boot, retrying below");
   } else {
     Serial.printf("wifi up, ip %s, channel %d\n",
                   WiFi.localIP().toString().c_str(), wifi_get_channel());
   }
-
-  wifi_set_channel(SNIFF_CHANNEL);          // E2: kept, under test
-#ifndef SNIFFER_DISABLED
-  wifi_set_promiscuous_rx_cb(on_packet);
-  // capture stays OFF here: MQTT must connect on a clean radio first
-#endif
+  // no wifi_set_channel here: the AP is already on the sniff channel, and
+  // nothing network-dependent may happen after capture begins anyway
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setBufferSize(256);
-  mqtt.setKeepAlive(60);       // the stack dies during capture sessions;
-                               // 60s gives the TALK windows room to revive
-                               // it and get a PINGREQ out in time
+  mqtt.setKeepAlive(60);
+
+  phase_until = millis() + IDLE_MS;
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(LED_BUILTIN, LOW);
-    static uint32_t wd_since = 0;
-    if (wd_since == 0) wd_since = millis();
-    else if (millis() - wd_since > 10000) {   // stuck >10s: bounce the stack
-      wd_since = 0;
-      WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_PASS);
-      Serial.println("wifi bounced");
+  if (phase == PH_HOME) {
+    if (!mqtt.connected()) {
+      digitalWrite(LED_BUILTIN, LOW);
+      if (mqtt_connect()) {
+        Serial.printf("mqtt connected to %s:%d\n", MQTT_HOST, MQTT_PORT);
+        mqtt.publish("presence/online",
+                     "{\"board\":\"" BOARD_ID "\",\"online\":true}", true);
+        digitalWrite(LED_BUILTIN, HIGH);
+      }
     }
-    delay(1000);
-    return;
-  }
+    mqtt.loop();
+    publish_queue();                    // drains RTC once the broker takes it
 
-  if (!mqtt.connected()) {
-    digitalWrite(LED_BUILTIN, LOW);
-    wifi_promiscuous_enable(false);   // dial out on a clean radio
-    session = SS_TALK;
-    session_until = millis() + SNIFF_GAP_MS;
-    if (mqtt_connect()) {
-      Serial.printf("mqtt connected to %s:%d\n", MQTT_HOST, MQTT_PORT);
-      // retained online: the offline will replaces it on unexpected death,
-      // so the dashboard never shows a stale state
-      mqtt.publish("presence/online",
-                   "{\"board\":\"" BOARD_ID "\",\"online\":true}", true);
-      digitalWrite(LED_BUILTIN, HIGH);
-      clean_fail = 0;
-    } else if (++clean_fail >= 3) {
-      Serial.println("mqtt stuck on clean radio: bouncing wifi");
-      WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_PASS);
-      clean_fail = 0;
-    }
-    delay(2000);
-    return;
-  }
-  clean_fail = 0;
-
-  mqtt.loop();
-
-#ifdef SNIFFER_DISABLED
-  // E2: pure keepalive client — no session machinery, no promiscuous toggles
-  delay(500);
-  return;
-#endif
-
-  uint32_t now = millis();
-  if (session == SS_SNIFF) {
-    if (now >= session_until) {
-      wifi_promiscuous_enable(false);
-      session = SS_TALK;
-      session_until = now + SNIFF_GAP_MS;
-      publish_sightings();          // queue drained on a quiet radio
-      report_channel();
-    }
-  } else {
-    if (now >= session_until) {
+    if (millis() >= phase_until) {
+      phase_until = millis() + SNIFF_SESSION_MS;
+      phase = PH_SNIFF;
+      wifi_set_promiscuous_rx_cb(on_packet);
       wifi_promiscuous_enable(true);
-      session = SS_SNIFF;
-      session_until = now + SNIFF_DURATION_MS;
+      Serial.println("sniffing...");
     }
+    return;
   }
-}
 
-// print channel activity every ~5s so the serial monitor has a pulse
-static void report_channel() {
-  static uint32_t last_report = 0;
-  uint32_t now = millis();
-  if (now - last_report < 5000) return;
-  Serial.printf("[sniff] ch%d: %u frames caught, %u probes seen\n",
-                SNIFF_CHANNEL, burst_frames, burst_probes);
-  last_report = now;
-  burst_frames = burst_probes = 0;
+  // PH_SNIFF: the stack is already dying by design — just capture and go.
+  mqtt.loop();
+  if (millis() >= phase_until) {
+    wifi_promiscuous_enable(false);
+    commit_queue();
+    Serial.printf("session done: %u frames, %u probes\n", burst_frames, burst_probes);
+    Serial.println("restarting");
+    delay(100);
+    ESP.restart();                      // fresh boot = fresh working stack
+  }
 }

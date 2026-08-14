@@ -12,10 +12,8 @@
 
 #define BOARD_ID    "a"              // "a" / "b" — one per NodeMCU
 
-#define PUBLISH_GAP_MS 10000         // min gap between sightings of same MAC
-
-// session sniffing: promiscuous capture kills the single-radio station's
-// network stack (even at 10% duty), so the board captures in sessions and
-// phones sightings home between them.
-#define SNIFF_DURATION_MS 4000       // radio in capture mode, contiguous
-#define SNIFF_GAP_MS 8000            // radio free: stack recovery + MQTT
+// v3 cycle: promiscuous capture permanently kills the ESP8266 station's TX
+// (proven in the build log), so the board boots, phones home, sniffs, and
+// reboots. Sightings queue in RTC memory across the reboot.
+#define SNIFF_SESSION_MS 15000       // radio in capture mode per cycle
+#define IDLE_MS 6000                 // clean-radio window after boot, pre-sniff
