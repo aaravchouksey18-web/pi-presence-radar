@@ -19,6 +19,15 @@ extern "C" {
 
 #include "config.h"
 
+// --- TEMP EXPERIMENT E2 ------------------------------------------------------
+// Keepalive-only client on channel 6, zero capture. Three firmware versions
+// all connected once at boot then fell TCP-silent forever, scaling exactly
+// with keepalive (22s/46s/90s) regardless of duty cycle. Question: is it
+// wifi_set_channel(6) alone, or promiscuous mode? Flip this off for the real
+// firmware after the experiment.
+#define SNIFFER_DISABLED
+// ----------------------------------------------------------------------------
+
 #define FRAME_TYPE_MGMT   0
 #define SUBTYPE_PROBE_REQ 4
 
@@ -184,9 +193,11 @@ void setup() {
                   WiFi.localIP().toString().c_str(), wifi_get_channel());
   }
 
-  wifi_set_channel(SNIFF_CHANNEL);
+  wifi_set_channel(SNIFF_CHANNEL);          // E2: kept, under test
+#ifndef SNIFFER_DISABLED
   wifi_set_promiscuous_rx_cb(on_packet);
   // capture stays OFF here: MQTT must connect on a clean radio first
+#endif
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setBufferSize(256);
@@ -235,6 +246,12 @@ void loop() {
   clean_fail = 0;
 
   mqtt.loop();
+
+#ifdef SNIFFER_DISABLED
+  // E2: pure keepalive client — no session machinery, no promiscuous toggles
+  delay(500);
+  return;
+#endif
 
   uint32_t now = millis();
   if (session == SS_SNIFF) {
