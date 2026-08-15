@@ -1,15 +1,13 @@
 // presence-sniffer.ino
 // Passive 802.11 probe-request sniffer for pi-presence-radar.
 //
-// v3 — "offline-first sensor". Experiment E2 proved promiscuous capture
-// permanently kills the ESP8266 station's TX: even on a clean radio, at any
-// duty cycle, after the first capture session the board cannot send a single
-// packet — only a fresh boot restores the stack (and a fresh boot ALWAYS
-// connects). So the board stopped trying to stay connected while sniffing.
-// Each cycle: boot fresh, phone home the previous session's sightings, sniff,
-// stash results in RTC memory (survives reboot), then reboot. RTC storage
-// also gives at-least-once delivery — sightings are only cleared after the
-// broker acknowledges all of them. See docs/build-log.md.
+// v3.3 — sniff-at-boot cycler. The histogram showed the real bug: after a
+// boot that ASSOCIATED first (then disconnected), the radio never locked
+// onto the channel — 15s sessions caught control + short frames only (233
+// ctrl, 6 deauths) and ZERO beacons, which is impossible on a live channel.
+// The canonical ESP8266 sniffer works from a COLD, unassociated radio, so
+// now the board sniffs FIRST at boot (radio idle, never associated), then
+// associates + reports + reboots. See docs/build-log.md.
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -25,10 +23,10 @@ extern "C" {
 
 // cycle knobs (config.h can override)
 #ifndef SNIFF_SESSION_MS
-#define SNIFF_SESSION_MS 15000   // radio in capture mode before the reboot
+#define SNIFF_SESSION_MS 15000   // radio in capture mode at boot
 #endif
-#ifndef IDLE_MS
-#define IDLE_MS 6000             // clean-radio window after boot, pre-sniff
+#ifndef PH_HOME_MS
+#define PH_HOME_MS 30000         // max time spent associating + reporting
 #endif
 
 // ---------------------------------------------------------------------------
@@ -220,86 +218,68 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   Serial.println("boot");
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-  Serial.println("connecting to wifi...");
-  uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) delay(250);
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("wifi failed this boot, retrying below");
-  } else {
-    Serial.printf("wifi up, ip %s, channel %d\n",
-                  WiFi.localIP().toString().c_str(), wifi_get_channel());
-  }
-  // no wifi_set_channel here: the AP is already on the sniff channel, and
-  // nothing network-dependent may happen after capture begins anyway
+  // Sniff FIRST, from a cold idle radio that has never associated — the
+  // canonical ESP8266 sniffer state. Associating first (then disconnecting)
+  // left the phy unable to lock the channel: sessions caught control + short
+  // frames only, zero beacons. Associate happens later, in the report phase.
+  WiFi.mode(WIFI_STA);                 // station opmode, NOT associated
+  wifi_set_channel(SNIFF_CHANNEL);
+  wifi_set_promiscuous_rx_cb(on_packet);
+  wifi_promiscuous_enable(true);
+  Serial.printf("sniffing on channel %d\n", wifi_get_channel());
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setBufferSize(256);
   mqtt.setKeepAlive(60);
 
-  phase_until = millis() + IDLE_MS;
+  phase = PH_SNIFF;
+  phase_until = millis() + SNIFF_SESSION_MS;
 }
 
 void loop() {
-  if (phase == PH_HOME) {
-    if (!mqtt.connected()) {
-      digitalWrite(LED_BUILTIN, LOW);
-      if (mqtt_connect()) {
-        Serial.printf("mqtt connected to %s:%d\n", MQTT_HOST, MQTT_PORT);
-        mqtt.publish("presence/online",
-                     "{\"board\":\"" BOARD_ID "\",\"online\":true}", true);
-        digitalWrite(LED_BUILTIN, HIGH);
-      }
-    }
-    mqtt.loop();
-    publish_queue();                    // drains RTC once the broker takes it
-
+  if (phase == PH_SNIFF) {
     if (millis() >= phase_until) {
-      phase_until = millis() + SNIFF_SESSION_MS;
-      phase = PH_SNIFF;
-      burst_frames = burst_probes = 0;
-      dbg_probe_n = 0;
-      memset(hist_mgmt, 0, sizeof(hist_mgmt));
-      hist_data = hist_ctrl = 0;
-      // Leave the AP first: while associated, the driver's RX filter only
-      // forwards our own BSS's frames to the callback (health checks looked
-      // fine but probes stayed at 0). Canonical sniffer init order below.
-      WiFi.disconnect();
-      delay(200);
-      wifi_set_opmode(STATION_MODE);
-      wifi_promiscuous_enable(false);        // clean slate
-      wifi_set_channel(SNIFF_CHANNEL);
-      wifi_set_promiscuous_rx_cb(on_packet);
-      wifi_promiscuous_enable(true);
-      Serial.printf("sniffing (off-assoc) on channel %d...\n", wifi_get_channel());
+      wifi_promiscuous_enable(false);
+      commit_queue();
+      Serial.printf("session done: %u frames, %u probes, ch=%u\n",
+                    burst_frames, burst_probes, wifi_get_channel());
+      Serial.printf("hist mgmt[0]=%lu [4]probe_req=%lu [5]probe_resp=%lu "
+                    "[8]beacon=%lu [11]auth=%lu [12]deauth=%lu | data=%lu ctrl=%lu\n",
+                    hist_mgmt[0], hist_mgmt[4], hist_mgmt[5], hist_mgmt[8],
+                    hist_mgmt[11], hist_mgmt[12], hist_data, hist_ctrl);
+      if (dbg_probe_n) {
+        Serial.print("  probe macs: ");
+        for (uint8_t i = 0; i < dbg_probe_n; i++)
+          Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x ",
+                        dbg_probe_mac[i][0], dbg_probe_mac[i][1], dbg_probe_mac[i][2],
+                        dbg_probe_mac[i][3], dbg_probe_mac[i][4], dbg_probe_mac[i][5]);
+        Serial.println();
+      }
+      Serial.println("reporting...");
+      phase = PH_HOME;
+      phase_until = millis() + PH_HOME_MS;
+      WiFi.begin(WIFI_SSID, WIFI_PASS);   // fresh association for the report
     }
     return;
   }
 
-  // PH_SNIFF: the stack is already dying by design — just capture and go.
-  mqtt.loop();
-  if (millis() >= phase_until) {
-    wifi_promiscuous_enable(false);
-    commit_queue();
-    Serial.printf("session done: %u frames, %u probes, ch=%u\n",
-                  burst_frames, burst_probes, wifi_get_channel());
-    Serial.printf("hist mgmt[0]=%lu [4]probe_req=%lu [5]probe_resp=%lu "
-                  "[8]beacon=%lu [11]auth=%lu [12]deauth=%lu | data=%lu ctrl=%lu\n",
-                  hist_mgmt[0], hist_mgmt[4], hist_mgmt[5], hist_mgmt[8],
-                  hist_mgmt[11], hist_mgmt[12], hist_data, hist_ctrl);
-    if (dbg_probe_n) {
-      Serial.print("  probe macs: ");
-      for (uint8_t i = 0; i < dbg_probe_n; i++)
-        Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x ",
-                      dbg_probe_mac[i][0], dbg_probe_mac[i][1], dbg_probe_mac[i][2],
-                      dbg_probe_mac[i][3], dbg_probe_mac[i][4], dbg_probe_mac[i][5]);
-      Serial.println();
+  // PH_HOME: associate + report, then reboot whatever happens (the RTC queue
+  // survives, so a failed report retries next cycle).
+  if (WiFi.status() == WL_CONNECTED && !mqtt.connected()) {
+    digitalWrite(LED_BUILTIN, LOW);
+    if (mqtt_connect()) {
+      Serial.printf("mqtt connected to %s:%d\n", MQTT_HOST, MQTT_PORT);
+      mqtt.publish("presence/online",
+                   "{\"board\":\"" BOARD_ID "\",\"online\":true}", true);
+      digitalWrite(LED_BUILTIN, HIGH);
     }
+  }
+  mqtt.loop();
+  publish_queue();                     // drains RTC once the broker takes it
+
+  if (millis() >= phase_until) {
     Serial.println("restarting");
     delay(100);
-    ESP.restart();                      // fresh boot = fresh working stack
+    ESP.restart();
   }
 }

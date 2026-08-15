@@ -12,8 +12,8 @@
 
 #define BOARD_ID    "a"              // "a" / "b" — one per NodeMCU
 
-// v3 cycle: promiscuous capture permanently kills the ESP8266 station's TX
-// (proven in the build log), so the board boots, phones home, sniffs, and
-// reboots. Sightings queue in RTC memory across the reboot.
-#define SNIFF_SESSION_MS 15000       // radio in capture mode per cycle
-#define IDLE_MS 6000                 // clean-radio window after boot, pre-sniff
+// v3 cycle: sniff FIRST from a cold unassociated radio at boot (the only
+// state where ESP8266 promiscuous actually locks the channel), then
+// associate + report + reboot. Sightings queue in RTC memory across reboots.
+#define SNIFF_SESSION_MS 15000       // radio in capture mode at boot
+#define PH_HOME_MS 30000             // max time associating + reporting
