@@ -76,6 +76,8 @@ struct seen_t {
 static seen_t seen[SEEN_MAX];
 static uint32_t burst_frames = 0;   // every 802.11 frame the radio caught
 static uint32_t burst_probes = 0;   // probe requests that hit the table
+static uint8_t dbg_probe_mac[3][6]; // first probe MACs of the session, for proof
+static uint8_t dbg_probe_n = 0;
 
 WiFiClient net;
 PubSubClient mqtt(net);
@@ -114,6 +116,10 @@ static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
   const uint8_t *mac = &buf[10];         // address 2 == transmitter
   uint32_t now = millis();
 
+  if (dbg_probe_n < 3) {                 // remember a few, for the serial proof
+    memcpy(dbg_probe_mac[dbg_probe_n], mac, 6);
+    dbg_probe_n++;
+  }
   burst_probes++;
   for (int i = 0; i < SEEN_MAX; i++) {
     if (seen[i].last_seen != 0 && memcmp(seen[i].mac, mac, 6) == 0) {
@@ -245,9 +251,18 @@ void loop() {
     if (millis() >= phase_until) {
       phase_until = millis() + SNIFF_SESSION_MS;
       phase = PH_SNIFF;
+      burst_frames = burst_probes = 0;
+      dbg_probe_n = 0;
+      // Leave the AP first: while associated, the driver's RX filter only
+      // forwards our own BSS's frames to the callback (health checks looked
+      // fine but probes stayed at 0). Disconnected + channel pinned, the
+      // radio delivers everything on channel 6.
+      WiFi.disconnect();
+      delay(200);
+      wifi_set_channel(SNIFF_CHANNEL);
       wifi_set_promiscuous_rx_cb(on_packet);
       wifi_promiscuous_enable(true);
-      Serial.println("sniffing...");
+      Serial.println("sniffing (off-assoc)...");
     }
     return;
   }
@@ -258,6 +273,14 @@ void loop() {
     wifi_promiscuous_enable(false);
     commit_queue();
     Serial.printf("session done: %u frames, %u probes\n", burst_frames, burst_probes);
+    if (dbg_probe_n) {
+      Serial.print("  probe macs: ");
+      for (uint8_t i = 0; i < dbg_probe_n; i++)
+        Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x ",
+                      dbg_probe_mac[i][0], dbg_probe_mac[i][1], dbg_probe_mac[i][2],
+                      dbg_probe_mac[i][3], dbg_probe_mac[i][4], dbg_probe_mac[i][5]);
+      Serial.println();
+    }
     Serial.println("restarting");
     delay(100);
     ESP.restart();                      // fresh boot = fresh working stack
