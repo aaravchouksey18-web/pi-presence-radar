@@ -79,6 +79,12 @@ static uint32_t burst_probes = 0;   // probe requests that hit the table
 static uint8_t dbg_probe_mac[3][6]; // first probe MACs of the session, for proof
 static uint8_t dbg_probe_n = 0;
 
+// frame-type histogram, printed at session end to see exactly what the radio
+// delivers (was: three theories, still 0 probes → count everything)
+static uint32_t hist_mgmt[16];      // per management subtype
+static uint32_t hist_data = 0;
+static uint32_t hist_ctrl = 0;
+
 WiFiClient net;
 PubSubClient mqtt(net);
 
@@ -110,6 +116,9 @@ static void parse_ssid(uint8_t *frame, uint16_t len, char *out, size_t out_sz) {
 static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
   if (len < 24) return;
   burst_frames++;
+  if (frame_type(buf) == 0)      hist_mgmt[frame_subtype(buf)]++;
+  else if (frame_type(buf) == 1) hist_ctrl++;
+  else if (frame_type(buf) == 2) hist_data++;
   if (frame_type(buf) != FRAME_TYPE_MGMT)      return;
   if (frame_subtype(buf) != SUBTYPE_PROBE_REQ) return;
 
@@ -253,16 +262,19 @@ void loop() {
       phase = PH_SNIFF;
       burst_frames = burst_probes = 0;
       dbg_probe_n = 0;
+      memset(hist_mgmt, 0, sizeof(hist_mgmt));
+      hist_data = hist_ctrl = 0;
       // Leave the AP first: while associated, the driver's RX filter only
       // forwards our own BSS's frames to the callback (health checks looked
-      // fine but probes stayed at 0). Disconnected + channel pinned, the
-      // radio delivers everything on channel 6.
+      // fine but probes stayed at 0). Canonical sniffer init order below.
       WiFi.disconnect();
       delay(200);
+      wifi_set_opmode(STATION_MODE);
+      wifi_promiscuous_enable(false);        // clean slate
       wifi_set_channel(SNIFF_CHANNEL);
       wifi_set_promiscuous_rx_cb(on_packet);
       wifi_promiscuous_enable(true);
-      Serial.println("sniffing (off-assoc)...");
+      Serial.printf("sniffing (off-assoc) on channel %d...\n", wifi_get_channel());
     }
     return;
   }
@@ -272,7 +284,12 @@ void loop() {
   if (millis() >= phase_until) {
     wifi_promiscuous_enable(false);
     commit_queue();
-    Serial.printf("session done: %u frames, %u probes\n", burst_frames, burst_probes);
+    Serial.printf("session done: %u frames, %u probes, ch=%u\n",
+                  burst_frames, burst_probes, wifi_get_channel());
+    Serial.printf("hist mgmt[0]=%lu [4]probe_req=%lu [5]probe_resp=%lu "
+                  "[8]beacon=%lu [11]auth=%lu [12]deauth=%lu | data=%lu ctrl=%lu\n",
+                  hist_mgmt[0], hist_mgmt[4], hist_mgmt[5], hist_mgmt[8],
+                  hist_mgmt[11], hist_mgmt[12], hist_data, hist_ctrl);
     if (dbg_probe_n) {
       Serial.print("  probe macs: ");
       for (uint8_t i = 0; i < dbg_probe_n; i++)
