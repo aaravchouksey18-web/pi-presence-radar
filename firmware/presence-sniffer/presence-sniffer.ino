@@ -83,6 +83,14 @@ static uint32_t hist_mgmt[16];      // per management subtype
 static uint32_t hist_data = 0;
 static uint32_t hist_ctrl = 0;
 
+// raw-frame sampler: first 3 frames of any kind + the longest frame seen,
+// to check parsing and whether long (beacon-sized) frames ever get through
+static uint8_t dbg_any_byte0[3];
+static uint8_t dbg_any_src[3][6];
+static uint16_t dbg_any_len[3];
+static uint8_t dbg_any_n = 0;
+static uint16_t dbg_max_len = 0;
+
 WiFiClient net;
 PubSubClient mqtt(net);
 
@@ -114,6 +122,13 @@ static void parse_ssid(uint8_t *frame, uint16_t len, char *out, size_t out_sz) {
 static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
   if (len < 24) return;
   burst_frames++;
+  if (dbg_any_n < 3) {
+    dbg_any_byte0[dbg_any_n] = buf[0];
+    memcpy(dbg_any_src[dbg_any_n], &buf[10], 6);
+    dbg_any_len[dbg_any_n] = len;
+    dbg_any_n++;
+  }
+  if (len > dbg_max_len) dbg_max_len = len;
   if (frame_type(buf) == 0)      hist_mgmt[frame_subtype(buf)]++;
   else if (frame_type(buf) == 1) hist_ctrl++;
   else if (frame_type(buf) == 2) hist_data++;
@@ -255,6 +270,13 @@ void loop() {
                         dbg_probe_mac[i][3], dbg_probe_mac[i][4], dbg_probe_mac[i][5]);
         Serial.println();
       }
+      Serial.printf("samples: max_len=%u\n", dbg_max_len);
+      for (uint8_t i = 0; i < dbg_any_n; i++)
+        Serial.printf("  f%d: b0=0x%02X src=%02x:%02x:%02x:%02x:%02x:%02x len=%u\n",
+                      i, dbg_any_byte0[i],
+                      dbg_any_src[i][0], dbg_any_src[i][1], dbg_any_src[i][2],
+                      dbg_any_src[i][3], dbg_any_src[i][4], dbg_any_src[i][5],
+                      dbg_any_len[i]);
       Serial.println("reporting...");
       phase = PH_HOME;
       phase_until = millis() + PH_HOME_MS;
