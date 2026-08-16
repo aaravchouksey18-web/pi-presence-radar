@@ -258,6 +258,8 @@ void loop() {
       commit_queue();
       Serial.printf("session done: %u frames, %u probes, ch=%u\n",
                     burst_frames, burst_probes, wifi_get_channel());
+      Serial.printf("wifi status=%d ip=%s (did the SDK auto-connect?)\n",
+                    WiFi.status(), WiFi.localIP().toString().c_str());
       Serial.printf("hist mgmt[0]=%lu [4]probe_req=%lu [5]probe_resp=%lu "
                     "[8]beacon=%lu [11]auth=%lu [12]deauth=%lu | data=%lu ctrl=%lu\n",
                     hist_mgmt[0], hist_mgmt[4], hist_mgmt[5], hist_mgmt[8],
