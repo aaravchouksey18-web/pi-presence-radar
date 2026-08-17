@@ -1,12 +1,12 @@
 // presence-sniffer.ino
 // Passive 802.11 probe-request sniffer for pi-presence-radar.
 //
-// v3.6 — rxctl-offset self-test. v3.5's +24 hypothetical parse still produced
-// nonsense (508 "deauths", headers that read 0D E7 02 AA...). Rather than
-// guess the header size again: this build scores candidate offsets against
-// "plausible frame-control byte" across the whole session and dumps raw bytes
-// from offset 0, so the true alignment can be read straight from the hex.
-// See docs/build-log.md.
+// v3.7 — offsets 12/28 showdown + full labeled dump. v3.6 scoring split 22/28
+// (6 apart, suspicious) and missed K=12 entirely — yet frame0 dumps showed the
+// router MAC <home-bssid> right behind an FF:FF:FF:FF:FF:FF broadcast with
+// "80 00" (the exact beacon frame-control) sitting at offset 12. This build
+// adds K=12 to the scoreboard, prints full 64-byte dumps with index labels,
+// and a labeled FC/dur/A1/A2/A3 parse at both 12 and 28 — read, don't guess.
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -25,8 +25,8 @@ extern "C" {
 // dependent (24? 25? 28?). Rather than guess: score candidate offsets by how
 // often they land on a plausible 802.11 frame-control byte (version 0, type
 // != reserved), and dump raw bytes so the alignment can be read directly.
-#define CAND_N 8
-static const uint8_t cand_off[CAND_N] = {16, 20, 22, 24, 25, 26, 28, 32};
+#define CAND_N 12
+static const uint8_t cand_off[CAND_N] = {8, 10, 12, 14, 16, 20, 22, 24, 25, 26, 28, 32};
 static uint32_t cand_score[CAND_N];
 
 // cycle knobs (config.h can override)
@@ -97,6 +97,15 @@ static uint8_t dbg_raw[2][64];
 static uint8_t dbg_raw_n = 0;
 static uint16_t dbg_max_len = 0;
 
+// labeled parses at the two prime suspects (12: beacon FC 0x80 seen there;
+// 28: top scorer) — print both, read the winner off the serial
+struct dbg_parse_t {
+  uint8_t fc0, fc1, dur0, dur1;
+  uint8_t a1[6], a2[6], a3[6];
+  uint16_t seq;
+};
+static dbg_parse_t dbg_p12[2], dbg_p28[2];
+
 WiFiClient net;
 PubSubClient mqtt(net);
 
@@ -132,6 +141,16 @@ static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
   if (dbg_raw_n < 2) {                 // raw bytes from offset 0, for the hexdump
     uint16_t n = len < 64 ? len : 64;
     memcpy(dbg_raw[dbg_raw_n], buf, n);
+    // labeled parses at K=12 and K=28 for the same frame
+    for (int K = 12, sl = 0; K <= 28; K += 16, sl++) {
+      dbg_parse_t *p = sl == 0 ? &dbg_p12[dbg_raw_n] : &dbg_p28[dbg_raw_n];
+      p->fc0 = buf[K]; p->fc1 = buf[K + 1];
+      p->dur0 = buf[K + 2]; p->dur1 = buf[K + 3];
+      memcpy(p->a1, &buf[K + 4], 6);
+      memcpy(p->a2, &buf[K + 10], 6);
+      memcpy(p->a3, &buf[K + 16], 6);
+      p->seq = buf[K + 22] | (buf[K + 23] << 8);
+    }
     dbg_raw_n++;
   }
   if (len > dbg_max_len) dbg_max_len = len;
@@ -298,10 +317,27 @@ void loop() {
         Serial.printf(" %u=%lu", cand_off[c], cand_score[c]);
       Serial.println();
       for (uint8_t i = 0; i < dbg_raw_n; i++) {
-        Serial.printf("  frame%d raw: ", i);
-        for (uint8_t j = 0; j < 40; j++)
-          Serial.printf("%02X ", dbg_raw[i][j]);
-        Serial.println();
+        Serial.printf("  frame%d raw (idx 0-63):\n", i);
+        for (uint8_t r = 0; r < 4; r++) {
+          Serial.printf("    %02u-%02u: ", r * 16, r * 16 + 15);
+          for (uint8_t j = 0; j < 16; j++)
+            Serial.printf("%02X ", dbg_raw[i][r * 16 + j]);
+          Serial.println();
+        }
+        const dbg_parse_t *p = &dbg_p12[i];
+        Serial.printf("    K=12: fc=%02X %02X dur=%02X %02X a1=%02x:%02x:%02x:%02x:%02x:%02x "
+                      "a2=%02x:%02x:%02x:%02x:%02x:%02x a3=%02x:%02x:%02x:%02x:%02x:%02x seq=%04X\n",
+                      p->fc0, p->fc1, p->dur0, p->dur1,
+                      p->a1[0], p->a1[1], p->a1[2], p->a1[3], p->a1[4], p->a1[5],
+                      p->a2[0], p->a2[1], p->a2[2], p->a2[3], p->a2[4], p->a2[5],
+                      p->a3[0], p->a3[1], p->a3[2], p->a3[3], p->a3[4], p->a3[5], p->seq);
+        p = &dbg_p28[i];
+        Serial.printf("    K=28: fc=%02X %02X dur=%02X %02X a1=%02x:%02x:%02x:%02x:%02x:%02x "
+                      "a2=%02x:%02x:%02x:%02x:%02x:%02x a3=%02x:%02x:%02x:%02x:%02x:%02x seq=%04X\n",
+                      p->fc0, p->fc1, p->dur0, p->dur1,
+                      p->a1[0], p->a1[1], p->a1[2], p->a1[3], p->a1[4], p->a1[5],
+                      p->a2[0], p->a2[1], p->a2[2], p->a2[3], p->a2[4], p->a2[5],
+                      p->a3[0], p->a3[1], p->a3[2], p->a3[3], p->a3[4], p->a3[5], p->seq);
       }
       Serial.println("reporting...");
       phase = PH_HOME;
