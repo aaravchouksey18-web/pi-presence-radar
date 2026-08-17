@@ -21,6 +21,13 @@ extern "C" {
 #define FRAME_TYPE_MGMT   0
 #define SUBTYPE_PROBE_REQ 4
 
+// Espressif core 3.x prepends a wifi_pkt_rx_ctrl_t (RSSI/rate/channel...) to
+// every frame the promiscuous callback delivers — the 802.11 header starts
+// at +PKT_OFF. Parsing the rxctl bytes as a frame is how every earlier
+// "0 probes" conclusion was fooled (all sampled frames looked like 128-byte
+// 0xAA/0xC9 monsters with "src" 06:00:80:00:00:00).
+#define PKT_OFF 24
+
 // cycle knobs (config.h can override)
 #ifndef SNIFF_SESSION_MS
 #define SNIFF_SESSION_MS 15000   // radio in capture mode at boot
@@ -83,12 +90,10 @@ static uint32_t hist_mgmt[16];      // per management subtype
 static uint32_t hist_data = 0;
 static uint32_t hist_ctrl = 0;
 
-// raw-frame sampler: first 3 frames of any kind + the longest frame seen,
-// to check parsing and whether long (beacon-sized) frames ever get through
-static uint8_t dbg_any_byte0[3];
-static uint8_t dbg_any_src[3][6];
-static uint16_t dbg_any_len[3];
-static uint8_t dbg_any_n = 0;
+// raw-frame sampler: first 2 frames' raw bytes + parsed shapes, to verify
+// the PKT_OFF alignment visually (beacon 0x08 / probe 0x40 / data 0x08..0x8)
+static uint8_t dbg_raw[2][40];
+static uint8_t dbg_raw_n = 0;
 static uint16_t dbg_max_len = 0;
 
 WiFiClient net;
@@ -120,22 +125,25 @@ static void parse_ssid(uint8_t *frame, uint16_t len, char *out, size_t out_sz) {
 // --- sniffer callback: stamp only, never touch TCP ---------------------------
 
 static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
-  if (len < 24) return;
-  burst_frames++;
-  if (dbg_any_n < 3) {
-    dbg_any_byte0[dbg_any_n] = buf[0];
-    memcpy(dbg_any_src[dbg_any_n], &buf[10], 6);
-    dbg_any_len[dbg_any_n] = len;
-    dbg_any_n++;
-  }
-  if (len > dbg_max_len) dbg_max_len = len;
-  if (frame_type(buf) == 0)      hist_mgmt[frame_subtype(buf)]++;
-  else if (frame_type(buf) == 1) hist_ctrl++;
-  else if (frame_type(buf) == 2) hist_data++;
-  if (frame_type(buf) != FRAME_TYPE_MGMT)      return;
-  if (frame_subtype(buf) != SUBTYPE_PROBE_REQ) return;
+  // skip the rxctl header: the real 802.11 frame starts at buf + PKT_OFF
+  if (len < PKT_OFF + 24) return;
+  uint8_t *f = buf + PKT_OFF;
+  uint16_t flen = len - PKT_OFF;
 
-  const uint8_t *mac = &buf[10];         // address 2 == transmitter
+  burst_frames++;
+  if (dbg_raw_n < 2) {
+    uint16_t n = flen < 40 ? flen : 40;
+    memcpy(dbg_raw[dbg_raw_n], f, n);
+    dbg_raw_n++;
+  }
+  if (flen > dbg_max_len) dbg_max_len = flen;
+  if (frame_type(f) == 0)      hist_mgmt[frame_subtype(f)]++;
+  else if (frame_type(f) == 1) hist_ctrl++;
+  else if (frame_type(f) == 2) hist_data++;
+  if (frame_type(f) != FRAME_TYPE_MGMT)      return;
+  if (frame_subtype(f) != SUBTYPE_PROBE_REQ) return;
+
+  const uint8_t *mac = &f[10];         // address 2 == transmitter
   uint32_t now = millis();
 
   if (dbg_probe_n < 3) {                 // remember a few, for the serial proof
@@ -146,7 +154,7 @@ static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
   for (int i = 0; i < SEEN_MAX; i++) {
     if (seen[i].last_seen != 0 && memcmp(seen[i].mac, mac, 6) == 0) {
       seen[i].last_seen = now;
-      if (!seen[i].ssid[0]) parse_ssid(buf, len, seen[i].ssid, sizeof(seen[i].ssid));
+      if (!seen[i].ssid[0]) parse_ssid(f, flen, seen[i].ssid, sizeof(seen[i].ssid));
       return;
     }
   }
@@ -154,7 +162,7 @@ static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
     if (seen[i].last_seen == 0) {        // fresh slot
       memcpy(seen[i].mac, mac, 6);
       seen[i].last_seen = now;
-      parse_ssid(buf, len, seen[i].ssid, sizeof(seen[i].ssid));
+      parse_ssid(f, flen, seen[i].ssid, sizeof(seen[i].ssid));
       return;
     }
   }
@@ -164,7 +172,7 @@ static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
     if (seen[i].last_seen < seen[oldest].last_seen) oldest = i;
   memcpy(seen[oldest].mac, mac, 6);
   seen[oldest].last_seen = now;
-  parse_ssid(buf, len, seen[oldest].ssid, sizeof(seen[oldest].ssid));
+  parse_ssid(f, flen, seen[oldest].ssid, sizeof(seen[oldest].ssid));
 }
 
 // --- publish the RTC queue right after boot (clean radio, fresh stack) --------
@@ -273,12 +281,12 @@ void loop() {
         Serial.println();
       }
       Serial.printf("samples: max_len=%u\n", dbg_max_len);
-      for (uint8_t i = 0; i < dbg_any_n; i++)
-        Serial.printf("  f%d: b0=0x%02X src=%02x:%02x:%02x:%02x:%02x:%02x len=%u\n",
-                      i, dbg_any_byte0[i],
-                      dbg_any_src[i][0], dbg_any_src[i][1], dbg_any_src[i][2],
-                      dbg_any_src[i][3], dbg_any_src[i][4], dbg_any_src[i][5],
-                      dbg_any_len[i]);
+      for (uint8_t i = 0; i < dbg_raw_n; i++) {
+        Serial.printf("  frame%d 802.11 hdr: ", i);
+        for (uint8_t j = 0; j < 24; j++)
+          Serial.printf("%02X ", dbg_raw[i][j]);
+        Serial.println();
+      }
       Serial.println("reporting...");
       phase = PH_HOME;
       phase_until = millis() + PH_HOME_MS;
