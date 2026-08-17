@@ -1,13 +1,12 @@
 // presence-sniffer.ino
 // Passive 802.11 probe-request sniffer for pi-presence-radar.
 //
-// v3.3 — sniff-at-boot cycler. The histogram showed the real bug: after a
-// boot that ASSOCIATED first (then disconnected), the radio never locked
-// onto the channel — 15s sessions caught control + short frames only (233
-// ctrl, 6 deauths) and ZERO beacons, which is impossible on a live channel.
-// The canonical ESP8266 sniffer works from a COLD, unassociated radio, so
-// now the board sniffs FIRST at boot (radio idle, never associated), then
-// associates + reports + reboots. See docs/build-log.md.
+// v3.6 — rxctl-offset self-test. v3.5's +24 hypothetical parse still produced
+// nonsense (508 "deauths", headers that read 0D E7 02 AA...). Rather than
+// guess the header size again: this build scores candidate offsets against
+// "plausible frame-control byte" across the whole session and dumps raw bytes
+// from offset 0, so the true alignment can be read straight from the hex.
+// See docs/build-log.md.
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -21,12 +20,14 @@ extern "C" {
 #define FRAME_TYPE_MGMT   0
 #define SUBTYPE_PROBE_REQ 4
 
-// Espressif core 3.x prepends a wifi_pkt_rx_ctrl_t (RSSI/rate/channel...) to
-// every frame the promiscuous callback delivers — the 802.11 header starts
-// at +PKT_OFF. Parsing the rxctl bytes as a frame is how every earlier
-// "0 probes" conclusion was fooled (all sampled frames looked like 128-byte
-// 0xAA/0xC9 monsters with "src" 06:00:80:00:00:00).
-#define PKT_OFF 24
+// Espressif core 3.x prepends a wifi_pkt_rx_ctrl_t header to every frame
+// delivered to the promiscuous callback — but its size is compiler/SDK
+// dependent (24? 25? 28?). Rather than guess: score candidate offsets by how
+// often they land on a plausible 802.11 frame-control byte (version 0, type
+// != reserved), and dump raw bytes so the alignment can be read directly.
+#define CAND_N 8
+static const uint8_t cand_off[CAND_N] = {16, 20, 22, 24, 25, 26, 28, 32};
+static uint32_t cand_score[CAND_N];
 
 // cycle knobs (config.h can override)
 #ifndef SNIFF_SESSION_MS
@@ -90,9 +91,9 @@ static uint32_t hist_mgmt[16];      // per management subtype
 static uint32_t hist_data = 0;
 static uint32_t hist_ctrl = 0;
 
-// raw-frame sampler: first 2 frames' raw bytes + parsed shapes, to verify
-// the PKT_OFF alignment visually (beacon 0x08 / probe 0x40 / data 0x08..0x8)
-static uint8_t dbg_raw[2][40];
+// raw-frame sampler: first 2 frames' raw bytes from offset 0 (rxctl + all),
+// so the true 802.11 header position can be read directly from the hex
+static uint8_t dbg_raw[2][64];
 static uint8_t dbg_raw_n = 0;
 static uint16_t dbg_max_len = 0;
 
@@ -125,18 +126,29 @@ static void parse_ssid(uint8_t *frame, uint16_t len, char *out, size_t out_sz) {
 // --- sniffer callback: stamp only, never touch TCP ---------------------------
 
 static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
-  // skip the rxctl header: the real 802.11 frame starts at buf + PKT_OFF
-  if (len < PKT_OFF + 24) return;
-  uint8_t *f = buf + PKT_OFF;
-  uint16_t flen = len - PKT_OFF;
+  if (len < 40) return;
 
   burst_frames++;
-  if (dbg_raw_n < 2) {
-    uint16_t n = flen < 40 ? flen : 40;
-    memcpy(dbg_raw[dbg_raw_n], f, n);
+  if (dbg_raw_n < 2) {                 // raw bytes from offset 0, for the hexdump
+    uint16_t n = len < 64 ? len : 64;
+    memcpy(dbg_raw[dbg_raw_n], buf, n);
     dbg_raw_n++;
   }
-  if (flen > dbg_max_len) dbg_max_len = flen;
+  if (len > dbg_max_len) dbg_max_len = len;
+
+  // score every candidate rxctl size: does buf+K read like a plausible
+  // frame-control byte (version 0, type != reserved)?
+  for (int c = 0; c < CAND_N; c++) {
+    uint8_t K = cand_off[c];
+    if (len < K + 24) continue;
+    uint8_t b0 = buf[K];
+    if ((b0 & 0x03) == 0 && ((b0 >> 2) & 0x03) != 3) cand_score[c]++;
+  }
+
+  // provisional parse at 24 (same as v3.5), for continuity — the winner is
+  // whatever offset the scores + hexdump agree on
+  uint8_t *f = buf + 24;
+  uint16_t flen = len - 24;
   if (frame_type(f) == 0)      hist_mgmt[frame_subtype(f)]++;
   else if (frame_type(f) == 1) hist_ctrl++;
   else if (frame_type(f) == 2) hist_data++;
@@ -281,9 +293,13 @@ void loop() {
         Serial.println();
       }
       Serial.printf("samples: max_len=%u\n", dbg_max_len);
+      Serial.print("  candidate off scores (want one big winner):");
+      for (uint8_t c = 0; c < CAND_N; c++)
+        Serial.printf(" %u=%lu", cand_off[c], cand_score[c]);
+      Serial.println();
       for (uint8_t i = 0; i < dbg_raw_n; i++) {
-        Serial.printf("  frame%d 802.11 hdr: ", i);
-        for (uint8_t j = 0; j < 24; j++)
+        Serial.printf("  frame%d raw: ", i);
+        for (uint8_t j = 0; j < 40; j++)
           Serial.printf("%02X ", dbg_raw[i][j]);
         Serial.println();
       }
