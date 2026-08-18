@@ -1,12 +1,13 @@
 // presence-sniffer.ino
 // Passive 802.11 probe-request sniffer for pi-presence-radar.
 //
-// v3.7 — offsets 12/28 showdown + full labeled dump. v3.6 scoring split 22/28
-// (6 apart, suspicious) and missed K=12 entirely — yet frame0 dumps showed the
-// router MAC <home-bssid> right behind an FF:FF:FF:FF:FF:FF broadcast with
-// "80 00" (the exact beacon frame-control) sitting at offset 12. This build
-// adds K=12 to the scoreboard, prints full 64-byte dumps with index labels,
-// and a labeled FC/dur/A1/A2/A3 parse at both 12 and 28 — read, don't guess.
+// v3.8 — the real parser. The offset showdown is settled: the rxctl header is
+// 12 bytes (proven in v3.7 by a fully-parsed home-ssid beacon: FC 80 00,
+// A1 broadcast, A2/A3 = <home-bssid>, timestamp, beacon interval 0x64,
+// SSID tag "home-ssid" — and offset 12 scored a valid frame-control byte
+// on all 1123/1123 frames). Every "0 probes / no beacons" conclusion from
+// v3.2-v3.5 was this misalignment. Capture code is unchanged: sniff at boot,
+// probe requests → RTC queue → MQTT, reboot.
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -20,14 +21,11 @@ extern "C" {
 #define FRAME_TYPE_MGMT   0
 #define SUBTYPE_PROBE_REQ 4
 
-// Espressif core 3.x prepends a wifi_pkt_rx_ctrl_t header to every frame
-// delivered to the promiscuous callback — but its size is compiler/SDK
-// dependent (24? 25? 28?). Rather than guess: score candidate offsets by how
-// often they land on a plausible 802.11 frame-control byte (version 0, type
-// != reserved), and dump raw bytes so the alignment can be read directly.
-#define CAND_N 12
-static const uint8_t cand_off[CAND_N] = {8, 10, 12, 14, 16, 20, 22, 24, 25, 26, 28, 32};
-static uint32_t cand_score[CAND_N];
+// The promiscuous callback on this SDK delivers 12 header bytes first:
+// rxctl (RSSI at [0], rate, length...) then the 802.11 frame at +12.
+// Proven empirically in v3.7 — a home-ssid beacon parsed perfectly
+// only with PKT_OFF 12 (scoreboard: 1123/1123 valid frame-control bytes).
+#define PKT_OFF 12
 
 // cycle knobs (config.h can override)
 #ifndef SNIFF_SESSION_MS
@@ -85,26 +83,11 @@ static uint32_t burst_probes = 0;   // probe requests that hit the table
 static uint8_t dbg_probe_mac[3][6]; // first probe MACs of the session, for proof
 static uint8_t dbg_probe_n = 0;
 
-// frame-type histogram, printed at session end to see exactly what the radio
-// delivers (was: three theories, still 0 probes → count everything)
+// frame-type histogram, printed at session end — the diagnosis that finally
+// works: beacons [8], probe_req [4], data/ctrl counts at the right alignment
 static uint32_t hist_mgmt[16];      // per management subtype
 static uint32_t hist_data = 0;
 static uint32_t hist_ctrl = 0;
-
-// raw-frame sampler: first 2 frames' raw bytes from offset 0 (rxctl + all),
-// so the true 802.11 header position can be read directly from the hex
-static uint8_t dbg_raw[2][64];
-static uint8_t dbg_raw_n = 0;
-static uint16_t dbg_max_len = 0;
-
-// labeled parses at the two prime suspects (12: beacon FC 0x80 seen there;
-// 28: top scorer) — print both, read the winner off the serial
-struct dbg_parse_t {
-  uint8_t fc0, fc1, dur0, dur1;
-  uint8_t a1[6], a2[6], a3[6];
-  uint16_t seq;
-};
-static dbg_parse_t dbg_p12[2], dbg_p28[2];
 
 WiFiClient net;
 PubSubClient mqtt(net);
@@ -135,39 +118,11 @@ static void parse_ssid(uint8_t *frame, uint16_t len, char *out, size_t out_sz) {
 // --- sniffer callback: stamp only, never touch TCP ---------------------------
 
 static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
-  if (len < 40) return;
+  if (len < PKT_OFF + 24) return;   // real frame must fit after the rxctl
+  uint8_t *f = buf + PKT_OFF;
+  uint16_t flen = len - PKT_OFF;
 
   burst_frames++;
-  if (dbg_raw_n < 2) {                 // raw bytes from offset 0, for the hexdump
-    uint16_t n = len < 64 ? len : 64;
-    memcpy(dbg_raw[dbg_raw_n], buf, n);
-    // labeled parses at K=12 and K=28 for the same frame
-    for (int K = 12, sl = 0; K <= 28; K += 16, sl++) {
-      dbg_parse_t *p = sl == 0 ? &dbg_p12[dbg_raw_n] : &dbg_p28[dbg_raw_n];
-      p->fc0 = buf[K]; p->fc1 = buf[K + 1];
-      p->dur0 = buf[K + 2]; p->dur1 = buf[K + 3];
-      memcpy(p->a1, &buf[K + 4], 6);
-      memcpy(p->a2, &buf[K + 10], 6);
-      memcpy(p->a3, &buf[K + 16], 6);
-      p->seq = buf[K + 22] | (buf[K + 23] << 8);
-    }
-    dbg_raw_n++;
-  }
-  if (len > dbg_max_len) dbg_max_len = len;
-
-  // score every candidate rxctl size: does buf+K read like a plausible
-  // frame-control byte (version 0, type != reserved)?
-  for (int c = 0; c < CAND_N; c++) {
-    uint8_t K = cand_off[c];
-    if (len < K + 24) continue;
-    uint8_t b0 = buf[K];
-    if ((b0 & 0x03) == 0 && ((b0 >> 2) & 0x03) != 3) cand_score[c]++;
-  }
-
-  // provisional parse at 24 (same as v3.5), for continuity — the winner is
-  // whatever offset the scores + hexdump agree on
-  uint8_t *f = buf + 24;
-  uint16_t flen = len - 24;
   if (frame_type(f) == 0)      hist_mgmt[frame_subtype(f)]++;
   else if (frame_type(f) == 1) hist_ctrl++;
   else if (frame_type(f) == 2) hist_data++;
@@ -310,34 +265,6 @@ void loop() {
                         dbg_probe_mac[i][0], dbg_probe_mac[i][1], dbg_probe_mac[i][2],
                         dbg_probe_mac[i][3], dbg_probe_mac[i][4], dbg_probe_mac[i][5]);
         Serial.println();
-      }
-      Serial.printf("samples: max_len=%u\n", dbg_max_len);
-      Serial.print("  candidate off scores (want one big winner):");
-      for (uint8_t c = 0; c < CAND_N; c++)
-        Serial.printf(" %u=%lu", cand_off[c], cand_score[c]);
-      Serial.println();
-      for (uint8_t i = 0; i < dbg_raw_n; i++) {
-        Serial.printf("  frame%d raw (idx 0-63):\n", i);
-        for (uint8_t r = 0; r < 4; r++) {
-          Serial.printf("    %02u-%02u: ", r * 16, r * 16 + 15);
-          for (uint8_t j = 0; j < 16; j++)
-            Serial.printf("%02X ", dbg_raw[i][r * 16 + j]);
-          Serial.println();
-        }
-        const dbg_parse_t *p = &dbg_p12[i];
-        Serial.printf("    K=12: fc=%02X %02X dur=%02X %02X a1=%02x:%02x:%02x:%02x:%02x:%02x "
-                      "a2=%02x:%02x:%02x:%02x:%02x:%02x a3=%02x:%02x:%02x:%02x:%02x:%02x seq=%04X\n",
-                      p->fc0, p->fc1, p->dur0, p->dur1,
-                      p->a1[0], p->a1[1], p->a1[2], p->a1[3], p->a1[4], p->a1[5],
-                      p->a2[0], p->a2[1], p->a2[2], p->a2[3], p->a2[4], p->a2[5],
-                      p->a3[0], p->a3[1], p->a3[2], p->a3[3], p->a3[4], p->a3[5], p->seq);
-        p = &dbg_p28[i];
-        Serial.printf("    K=28: fc=%02X %02X dur=%02X %02X a1=%02x:%02x:%02x:%02x:%02x:%02x "
-                      "a2=%02x:%02x:%02x:%02x:%02x:%02x a3=%02x:%02x:%02x:%02x:%02x:%02x seq=%04X\n",
-                      p->fc0, p->fc1, p->dur0, p->dur1,
-                      p->a1[0], p->a1[1], p->a1[2], p->a1[3], p->a1[4], p->a1[5],
-                      p->a2[0], p->a2[1], p->a2[2], p->a2[3], p->a2[4], p->a2[5],
-                      p->a3[0], p->a3[1], p->a3[2], p->a3[3], p->a3[4], p->a3[5], p->seq);
       }
       Serial.println("reporting...");
       phase = PH_HOME;
