@@ -1,13 +1,13 @@
 // presence-sniffer.ino
 // Passive 802.11 probe-request sniffer for pi-presence-radar.
 //
-// v3.8 — the real parser. The offset showdown is settled: the rxctl header is
-// 12 bytes (proven in v3.7 by a fully-parsed home-ssid beacon: FC 80 00,
-// A1 broadcast, A2/A3 = <home-bssid>, timestamp, beacon interval 0x64,
-// SSID tag "home-ssid" — and offset 12 scored a valid frame-control byte
-// on all 1123/1123 frames). Every "0 probes / no beacons" conclusion from
-// v3.2-v3.5 was this misalignment. Capture code is unchanged: sniff at boot,
-// probe requests → RTC queue → MQTT, reboot.
+// v3.9 — publish straight from RAM, no RTC. The offset fix (v3.8) works:
+// beacons ~414 and probe requests from real devices now hit the histogram.
+// But sightings never reached the broker: every boot logs "rst cause:1"
+// (power-on reset, not ESP.restart's soft reset) — the board POWER-CYCLES
+// each cycle, and a cold boot wipes RTC memory. The RTC queue died there.
+// Since the sniff phase and the report phase run in the SAME boot, the seen
+// table is still in RAM at publish time — publish it directly.
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -36,40 +36,9 @@ extern "C" {
 #endif
 
 // ---------------------------------------------------------------------------
-// RTC queue: pending sightings survive the reboot. 256 bytes total:
-// 1 magic + 1 count + 6 slots of {6 mac + 32 ssid}.
-// ---------------------------------------------------------------------------
-#define RTC_SLOTS 6
-#define RTC_MAGIC 0xA5
-#define RTC_ADDR  64          // user RTC memory starts here on ESP8266
-
-struct rtc_slot_t { uint8_t mac[6]; char ssid[32]; };
-struct rtc_q_t {
-  uint8_t magic;              // RTC_MAGIC means the queue is valid
-  uint8_t count;
-  rtc_slot_t slots[RTC_SLOTS];
-};
-
-static void rtc_read(rtc_q_t *q) {
-  if (!system_rtc_mem_read(RTC_ADDR, q, sizeof(rtc_q_t)) || q->magic != RTC_MAGIC) {
-    memset(q, 0, sizeof(rtc_q_t));   // first boot / corrupted: start empty
-  }
-}
-
-static void rtc_write(const rtc_q_t *q) {
-  rtc_q_t tmp = *q;
-  system_rtc_mem_write(RTC_ADDR, &tmp, sizeof(rtc_q_t));
-}
-
-static void rtc_clear() {
-  rtc_q_t q;
-  memset(&q, 0, sizeof(q));
-  q.magic = RTC_MAGIC;
-  rtc_write(&q);
-}
-
-// ---------------------------------------------------------------------------
-// in-RAM seen table, filled by the sniffer callback during a capture session
+// in-RAM seen table, filled by the sniffer callback during a capture session.
+// Published straight to MQTT from the SAME boot's report phase (power-cycles
+// wipe RTC, but RAM survives within a boot).
 // ---------------------------------------------------------------------------
 #define SEEN_MAX 24
 struct seen_t {
@@ -161,47 +130,29 @@ static void ICACHE_RAM_ATTR on_packet(uint8_t *buf, uint16_t len) {
   parse_ssid(f, flen, seen[oldest].ssid, sizeof(seen[oldest].ssid));
 }
 
-// --- publish the RTC queue right after boot (clean radio, fresh stack) --------
+// --- publish the captured sightings from the same boot's report phase ---------
 
-static void publish_queue() {
-  static rtc_q_t q;
-  rtc_read(&q);
-  if (q.count == 0) return;
-
+static void publish_seen() {
   int sent = 0;
-  for (int i = 0; i < q.count; i++) {
+  for (int i = 0; i < SEEN_MAX; i++) {
+    if (seen[i].last_seen == 0) continue;      // nothing captured this session
     StaticJsonDocument<192> doc;
     doc["board"] = BOARD_ID;
     char mac_s[18];
     snprintf(mac_s, sizeof(mac_s), "%02x:%02x:%02x:%02x:%02x:%02x",
-             q.slots[i].mac[0], q.slots[i].mac[1], q.slots[i].mac[2],
-             q.slots[i].mac[3], q.slots[i].mac[4], q.slots[i].mac[5]);
+             seen[i].mac[0], seen[i].mac[1], seen[i].mac[2],
+             seen[i].mac[3], seen[i].mac[4], seen[i].mac[5]);
     doc["mac"] = mac_s;
-    if (q.slots[i].ssid[0]) doc["ssid"] = q.slots[i].ssid;
+    if (seen[i].ssid[0]) doc["ssid"] = seen[i].ssid;
 
     char payload[192];
     serializeJson(doc, payload, sizeof(payload));
-    if (mqtt.publish("presence/sighting", payload)) sent++;
+    if (mqtt.publish("presence/sighting", payload)) {
+      sent++;
+      seen[i].last_seen = 0;                   // delivered: don't resend this boot
+    }
   }
-  Serial.printf("published %d/%d queued sightings\n", sent, q.count);
-  if (sent == q.count) rtc_clear();       // broker took them all: safe to drop
-}
-
-// --- end of capture session: commit fresh sightings into the RTC queue -------
-
-static void commit_queue() {
-  static rtc_q_t q;
-  rtc_read(&q);
-  for (int i = 0; i < SEEN_MAX && q.count < RTC_SLOTS; i++) {
-    if (seen[i].last_seen == 0) continue;         // nothing new this session
-    memcpy(q.slots[q.count].mac, seen[i].mac, 6);
-    snprintf(q.slots[q.count].ssid, sizeof(q.slots[q.count].ssid), "%s",
-             seen[i].ssid);
-    q.count++;
-    seen[i].last_seen = 0;
-  }
-  q.magic = RTC_MAGIC;
-  rtc_write(&q);
+  if (sent) Serial.printf("published %d sightings\n", sent);
 }
 
 // --- MQTT --------------------------------------------------------------------
@@ -226,6 +177,7 @@ void setup() {
   delay(200);
   pinMode(LED_BUILTIN, OUTPUT);
   Serial.println("boot");
+  Serial.printf("reset reason: %s\n", ESP.getResetReason());
 
   // Sniff FIRST, from a cold idle radio that has never associated — the
   // canonical ESP8266 sniffer state. Associating first (then disconnecting)
@@ -249,7 +201,6 @@ void loop() {
   if (phase == PH_SNIFF) {
     if (millis() >= phase_until) {
       wifi_promiscuous_enable(false);
-      commit_queue();
       Serial.printf("session done: %u frames, %u probes, ch=%u\n",
                     burst_frames, burst_probes, wifi_get_channel());
       Serial.printf("wifi status=%d ip=%s (did the SDK auto-connect?)\n",
@@ -286,7 +237,7 @@ void loop() {
     }
   }
   mqtt.loop();
-  publish_queue();                     // drains RTC once the broker takes it
+  publish_seen();                 // drains this boot's captures via MQTT
 
   if (millis() >= phase_until) {
     Serial.println("restarting");
