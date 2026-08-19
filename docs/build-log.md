@@ -107,3 +107,23 @@ ssh link.)
   that's what caught the corrupt flash).
 - Board "a" is the V1 on the bench. V3 (board "b") still unflashed.
 - Second sensor = second venue; aggregator dedup is by (mac, board, time).
+
+### Aggregator + dashboard (same day)
+The Pi gets a process that subscribes to presence/sighting and
+presence/online, keeps an in-memory view (dedup: any report of an already-
+known mac refreshes its last_seen — that refresh IS the "still home"
+signal), and serves the data over HTTP. One python file, flask + paho-mqtt,
+in Docker like the broker: `presence-hub`, --network host, port 8000.
+
+    GET /api/who    devices heard within the HOME_S window (default 300s)
+    GET /api/stats  totals + per-board liveness
+    GET /           dashboard page, polls the API every 5s
+
+Live ~1 minute after first boot: two devices in /api/who, one carrying the
+SSID it probed for ("neighbor-ssid"), board "a" shown alive via its retained
+online message. Full chain now: NodeMCU sniffer -> MQTT -> aggregator ->
+dashboard.
+
+### Closeout
+Still to do: V3 as a second sensor (board "b"), photo of the rig, README
+intro in my own words, and the phone-home toggle demo writeup with numbers.

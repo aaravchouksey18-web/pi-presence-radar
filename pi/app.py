@@ -162,7 +162,7 @@ def api_stats():
             "uptime_s": int(_now() - STARTED),
             "devices_total": total,
             "devices_home": home,
-            "sighting_reports": sightings,
+            "device_board_pairs": sightings,   # distinct (device, board) pairs
             "boards": bstats,
         })
 
