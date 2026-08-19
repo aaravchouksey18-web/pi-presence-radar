@@ -15,6 +15,12 @@ Run on the Pi (mosquitto already lives in Docker on the same host):
 
     docker build -t presence-hub pi/
     docker run -d --name presence-hub --restart unless-stopped \
-      --network host -e MQTT_HOST=localhost presence-hub
+      -p 8000:8000 -e MQTT_HOST=172.17.0.2 presence-hub
+
+`MQTT_HOST` is mosquitto's docker-bridge IP (check with `docker inspect
+mosquitto | grep -i ipaddress`; it's `.2` when mosquitto is the first
+bridge container). Talk to MQTT over docker-internal, and publish port
+8000 the normal way — a host firewall on the Pi blocks bare host-network
+binds from the LAN, which is why `--network host` quietly failed.
 
 Dashboard: http://<pi>:8000  ·  API: /api/who, /api/stats, /healthz
