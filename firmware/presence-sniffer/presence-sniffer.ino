@@ -23,7 +23,7 @@ extern "C" {
 
 // The promiscuous callback on this SDK delivers 12 header bytes first:
 // rxctl (RSSI at [0], rate, length...) then the 802.11 frame at +12.
-// Proven empirically in v3.7 — a home-ssid beacon parsed perfectly
+// Proven empirically in v3.7 — a full home-router beacon parsed perfectly
 // only with PKT_OFF 12 (scoreboard: 1123/1123 valid frame-control bytes).
 #define PKT_OFF 12
 

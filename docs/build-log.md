@@ -14,8 +14,8 @@ Tracker: MAC sightings over MQTT, a small Flask app polling the aggregator.
 
 ### The promiscuous saga: "this radio cannot hear anything" (it could)
 Goal: passive channel-6 sniffer. Baseline was trivial — the board joined
-home-ssid, MQTT-connected, DHCP, the lot. Turning on promiscuous RX is
-where the day went sideways.
+the home network, MQTT-connected, DHCP, the lot. Turning on promiscuous RX
+is where the day went sideways.
 
 **The symptom:** every 15-second sniff session reported ZERO probe requests
 and ZERO beacons. On a live channel that is physically impossible — the
@@ -44,12 +44,13 @@ and dump raw bytes with index labels. Winners at 22 and 28 (6 apart,
 suspicious), and offset 12 hadn't even been in the candidate list — yet the
 dump showed a full beacon sitting at +12: FC 0x80 00, broadcast A1, A2=A3
 = <home-bssid> (the router), timestamp, beacon interval 0x64,
-and the SSID tag literally spelling "home-ssid". Offset 12 then scored
-a valid frame-control byte on 1123/1123 frames. **rxctl is 12 bytes.**
+and the SSID tag literally spelling out the home network name. Offset 12
+then scored a valid frame-control byte on 1123/1123 frames. **rxctl is
+12 bytes.**
 
 v3.8 with the real parser: 397-415 beacons/session, probe_requests coming
-in, and the first captured probe MACs (a couple of Apple-OUIs, one
-aa:bb:cc:00:00:01). The radio had been fine the whole time.
+in, and the first captured probe MACs (a couple of Apple-OUIs — real
+devices, anonymized in this log). The radio had been fine the whole time.
 
 Lesson: when hardware "definitely can't hear anything," print the raw
 bytes; and pin API knowledge to the exact SDK/core version — the
@@ -85,20 +86,21 @@ MQTT `presence/sighting`. Live broker trace, one cycle:
     presence/sighting {"board":"a","mac":"aa:bb:cc:00:00:04"}
     presence/sighting {"board":"a","mac":"aa:bb:cc:00:00:05"}
 
-Randomized-MAC probes (aa:bb:cc:00:00:02/04 patterns) are phones scanning
-generically; aa:bb:cc:00:00:03 probing home-ssid is a device knowingly hunting
-its home network — the reconnect pattern you see when someone toggles
-WiFi. That'll be the phone-home demo: toggle phone WiFi next to the board,
-watch the MAC land. (Do NOT toggle your Mac's WiFi during this — it's the
-ssh link.)
+(MACs and SSIDs anonymized — the shape is real, the values aren't.)
+Randomized-MAC probes (aa:bb:cc:00:00:02/04 patterns — locally
+administered bit set) are phones scanning generically; aa:bb:cc:00:00:03
+probing home-ssid is a device knowingly hunting its home network — the
+reconnect pattern you see when someone toggles WiFi. That'll be the
+phone-home demo: toggle phone WiFi next to the board, watch the MAC land.
+(Do NOT toggle your Mac's WiFi during this — it's the ssh link.)
 
 ### Measured
 - beacon rate on ch6: ~26/s (415 in a 15s session)
 - probe requests/session: 4-11 (idle house), all one or two real devices
 - cycle: ~15s sniff + ~30s report + reboot ≈ 45-46s
 - sighting latency: same-boot (seconds after report phase connects)
-- Pi sees home-ssid at -49 dBm; the home 2.4GHz BSSID is
-  <home-bssid>; a second AP on ch6 (hidden SSID) is <neighbor-bssid>
+- Pi sees the home network at -49 dBm; home 2.4GHz BSSID and a second AP
+  on ch6 (hidden SSID) both anonymized in this log
 
 ### Open
 - V1 board power is marginal: one corrupted flash already, cause unknown
@@ -113,16 +115,23 @@ The Pi gets a process that subscribes to presence/sighting and
 presence/online, keeps an in-memory view (dedup: any report of an already-
 known mac refreshes its last_seen — that refresh IS the "still home"
 signal), and serves the data over HTTP. One python file, flask + paho-mqtt,
-in Docker like the broker: `presence-hub`, --network host, port 8000.
+in Docker like the broker: `presence-hub`, published port 8000, MQTT via
+mosquitto's docker-bridge IP.
 
     GET /api/who    devices heard within the HOME_S window (default 300s)
     GET /api/stats  totals + per-board liveness
     GET /           dashboard page, polls the API every 5s
 
 Live ~1 minute after first boot: two devices in /api/who, one carrying the
-SSID it probed for ("neighbor-ssid"), board "a" shown alive via its retained
+SSID it probed for, board "a" shown alive via its retained
 online message. Full chain now: NodeMCU sniffer -> MQTT -> aggregator ->
 dashboard.
+
+(The dashboard's first container used --network host and silently failed
+from the LAN: the Pi's host firewall drops incoming connections to bare
+host binds, while docker-published ports get their own accept rule. Fix:
+publish 8000 like mosquitto does, and talk MQTT to mosquitto's bridge IP —
+container-to-container, no firewall in the path. Documented in pi/README.md.)
 
 ### Closeout
 Still to do: V3 as a second sensor (board "b"), photo of the rig, README
