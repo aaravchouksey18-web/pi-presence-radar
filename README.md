@@ -20,8 +20,13 @@ to the Pi. A small web app turns the stream into a "who's home" list.
 
 - sniffers: `firmware/` — ESP8266 sketches (one per board, same core)
 - hub: `pi/` — aggregator + dashboard (Docker on the Pi)
-- docs: `docs/` — wiring, build log
+- docs: `docs/` — build log + block diagrams
 - numbers: `measurements/`
+
+![system architecture](docs/diagrams/architecture.svg)
+
+*Block diagrams live in `docs/diagrams/` — one per subsystem (this one is
+the whole chain, top to bottom).*
 
 ## Hardware
 
@@ -31,8 +36,9 @@ to the Pi. A small web app turns the stream into a "who's home" list.
 
 ## Status
 
-- [ ] finalize sniffing firmware (promiscuous receive)
-- [ ] flash both NodeMCUs, confirm sightings
-- [ ] MQTT sightings -> broker
-- [ ] aggregator + who's-home dashboard
-- [ ] measurements + photos
+- [x] sniffing firmware (promiscuous receive, rxctl at +12)
+- [x] board a flashed + sighting stream live
+- [ ] board b (V3) — hardware swap + flash pending
+- [x] MQTT sightings -> broker
+- [x] aggregator + who's-home dashboard
+- [ ] measurements + photos + README intro (in progress)

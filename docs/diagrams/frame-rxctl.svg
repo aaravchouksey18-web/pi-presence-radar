@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 380" role="img" aria-label="received frame anatomy with 12-byte rxctl header">
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #24292f; }
+    .rx  { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .fld { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .ttl { font-weight: 700; font-size: 13px; }
+    .sub { font-size: 11px; }
+    .lbl { font-size: 11px; fill: #6e7781; }
+    .note{ font-size: 11px; fill: #24292f; }
+  </style>
+
+  <!-- buffer view -->
+  <text class="ttl" x="60" y="30">one received frame buffer (128 bytes)</text>
+  <rect class="rx" x="60" y="40" width="100" height="46"/>
+  <text class="sub" x="70" y="58">rxctl</text>
+  <text class="sub" x="70" y="74">12 bytes</text>
+  <rect class="fld" x="160" y="40" width="700" height="46"/>
+  <text class="sub" x="170" y="60">rest of the buffer: the actual 802.11 frame (+ payload)</text>
+  <text class="sub" x="170" y="76" fill="#6e7781">this is what an unparsed frame looks like — 0xAA/0xC9 at [0], "source MAC" 06:00:80:00:00:00</text>
+
+  <line x1="160" y1="18" x2="160" y2="330" stroke="#0969da" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text class="lbl" x="172" y="110" fill="#0969da">offset 12 — the frame starts here</text>
+
+  <!-- frame fields -->
+  <text class="ttl" x="60" y="155">802.11 frame, field by field</text>
+  <!-- FC -->
+  <rect class="fld" x="60" y="170" width="55" height="46"/>
+  <text class="sub" x="68" y="198">FC (2)</text>
+  <!-- Dur -->
+  <rect class="fld" x="115" y="170" width="55" height="46"/>
+  <text class="sub" x="123" y="198">Dur (2)</text>
+  <!-- A1 -->
+  <rect class="fld" x="170" y="170" width="120" height="46"/>
+  <text class="sub" x="178" y="198">A1 dst (6)</text>
+  <!-- A2 -->
+  <rect class="fld" x="290" y="170" width="120" height="46"/>
+  <text class="sub" x="298" y="198">A2 src (6)</text>
+  <!-- A3 -->
+  <rect class="fld" x="410" y="170" width="120" height="46"/>
+  <text class="sub" x="418" y="198">A3 (6)</text>
+  <!-- Seq -->
+  <rect class="fld" x="530" y="170" width="55" height="46"/>
+  <text class="sub" x="538" y="198">Seq (2)</text>
+  <!-- body -->
+  <rect class="fld" x="585" y="170" width="275" height="46"/>
+  <text class="sub" x="593" y="198">frame body … tagged params (SSID 0x00, rates…)</text>
+
+  <!-- annotations -->
+  <text class="note" x="170" y="255">A1: probe → ff:ff:ff:ff:ff:ff (broadcast) · beacon → ff:ff:ff:ff:ff:ff</text>
+  <text class="note" x="290" y="275">A2: probe → device MAC (often randomized) · beacon → router BSSID</text>
+  <text class="note" x="410" y="295">A3: probe → ff or BSSID · beacon → A2 = A3 = router BSSID</text>
+
+  <!-- smoking gun -->
+  <text class="note" x="60" y="335">the smoking gun: a beacon's SSID tag parsed perfectly at +12 — valid frame-control bytes on 1123/1123 frames.</text>
+  <text class="note" x="60" y="353">"this radio cannot hear anything" was a parsing bug, not a dead antenna.</text>
+</svg>

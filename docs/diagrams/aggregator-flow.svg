@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 400" role="img" aria-label="presence-hub aggregator data flow">
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #24292f; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; rx: 8; }
+    .topic{ fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; rx: 8; }
+    .http{ fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; rx: 8; }
+    .ttl { font-weight: 700; font-size: 13px; }
+    .sub { font-size: 11px; }
+    .lbl { font-size: 11px; fill: #6e7781; }
+  </style>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <text class="ttl" x="40" y="28">presence-hub — one python process (flask + paho-mqtt)</text>
+
+  <!-- mqtt topics -->
+  <rect class="topic" x="40" y="55" width="230" height="46"/>
+  <text class="sub" x="50" y="74">MQTT · presence/sighting</text>
+  <text class="sub" x="50" y="90" fill="#6e7781">{"board","mac","ssid"}</text>
+
+  <rect class="topic" x="40" y="115" width="230" height="46"/>
+  <text class="sub" x="50" y="134">MQTT · presence/online (retained)</text>
+  <text class="sub" x="50" y="150" fill="#6e7781">board liveness</text>
+
+  <rect class="topic" x="40" y="175" width="230" height="46"/>
+  <text class="sub" x="50" y="194">MQTT · presence/offline (LWT)</text>
+  <text class="sub" x="50" y="210" fill="#6e7781">board went away</text>
+
+  <!-- hub -->
+  <rect class="box" x="360" y="70" width="260" height="150"/>
+  <text class="ttl" x="378" y="94">in-memory store</text>
+  <text class="sub" x="378" y="118">devices: mac → last_seen,</text>
+  <text class="sub" x="378" y="134">ssid, boards[]</text>
+  <text class="sub" x="378" y="158">boards: last_online</text>
+  <text class="sub" x="378" y="184">any sighting refreshes last_seen —</text>
+  <text class="sub" x="378" y="200">that refresh IS "still home"</text>
+
+  <!-- dash -->
+  <rect class="http" x="720" y="70" width="170" height="70"/>
+  <text class="ttl" x="738" y="94">web dashboard</text>
+  <text class="sub" x="738" y="112">polls every 5 s,</text>
+  <text class="sub" x="738" y="128">paints who's-home cards</text>
+
+  <!-- endpoints -->
+  <rect class="http" x="720" y="155" width="170" height="30"/>
+  <text class="sub" x="730" y="175">GET /api/who</text>
+  <rect class="http" x="720" y="190" width="170" height="30"/>
+  <text class="sub" x="730" y="210">GET /api/stats · /healthz</text>
+
+  <!-- arrows -->
+  <line x1="270" y1="78" x2="355" y2="95" stroke="#0969da" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="270" y1="138" x2="355" y2="125" stroke="#0969da" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="270" y1="198" x2="355" y2="205" stroke="#0969da" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="620" y1="110" x2="715" y2="105" stroke="#9a6700" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="620" y1="180" x2="715" y2="180" stroke="#9a6700" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <text class="lbl" x="40" y="330">store is volatile (process memory) — a restart refills it within about a minute</text>
+  <text class="lbl" x="40" y="348">from the next board report: boards re-announce online at every boot, devices re-appear</text>
+  <text class="lbl" x="40" y="366">as their MACs get heard again.</text>
+</svg>

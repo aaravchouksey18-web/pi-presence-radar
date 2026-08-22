@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 430" role="img" aria-label="firmware session loop">
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #24292f; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; rx: 8; }
+    .step{ fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; rx: 8; }
+    .note{ fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; rx: 8; }
+    .ttl { font-weight: 700; font-size: 13px; }
+    .sub { font-size: 11px; }
+    .lbl { font-size: 11px; fill: #6e7781; }
+  </style>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <!-- B1 boot -->
+  <rect class="box" x="60" y="40" width="220" height="70"/>
+  <text class="ttl" x="80" y="68">boot — radio idle</text>
+  <text class="sub" x="80" y="88">cold start, no prior association</text>
+
+  <!-- B2 sniff -->
+  <rect class="step" x="60" y="180" width="220" height="90"/>
+  <text class="ttl" x="80" y="208">1 · sniff 15 s</text>
+  <text class="sub" x="80" y="228">promiscuous, channel 6</text>
+  <text class="sub" x="80" y="244">every frame lands in the callback</text>
+
+  <!-- B3 parse -->
+  <rect class="step" x="340" y="180" width="250" height="90"/>
+  <text class="ttl" x="360" y="208">2 · parse + queue in RAM</text>
+  <text class="sub" x="360" y="228">skip 12-byte rxctl, check frame control</text>
+  <text class="sub" x="360" y="244">keep (mac, ssid) for probes/beacons</text>
+
+  <!-- B4 report -->
+  <rect class="step" x="640" y="180" width="220" height="90"/>
+  <text class="ttl" x="660" y="208">3 · associate + report</text>
+  <text class="sub" x="660" y="228">join WiFi (up to 30 s)</text>
+  <text class="sub" x="660" y="244">publish ALL queued sightings via MQTT</text>
+
+  <!-- B5 reboot -->
+  <rect class="box" x="640" y="40" width="220" height="70"/>
+  <text class="ttl" x="660" y="68">4 · power-cycle reboot</text>
+  <text class="sub" x="660" y="88">rst cause:1 — RAM wiped clean</text>
+
+  <!-- arrows -->
+  <line x1="170" y1="110" x2="170" y2="175" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="285" y1="225" x2="335" y2="225" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="595" y1="225" x2="635" y2="225" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="750" y1="175" x2="750" y2="115" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="635" y1="75" x2="285" y2="75" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text class="lbl" x="452" y="60" text-anchor="middle">next session — forever</text>
+
+  <!-- why not RTC note -->
+  <rect class="note" x="60" y="320" width="800" height="80"/>
+  <text class="ttl" x="80" y="348">why no RTC queue?</text>
+  <text class="sub" x="80" y="368">every reboot is a hard power-cycle and the ESP8266's RTC memory simply does
+  not survive it.</text>
+  <text class="sub" x="80" y="384">so the queue lives in RAM for one boot only, and is published before the reboot — at-least-once, dedup happens upstream.</text>
+  <text class="lbl" x="80" y="406">one full session ≈ 45 s (15 s listening + up to 30 s reporting)</text>
+</svg>

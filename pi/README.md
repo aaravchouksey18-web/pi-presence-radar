@@ -4,6 +4,12 @@ What runs on the Pi (the other half of the sensor). One process: an MQTT
 subscriber that keeps an in-memory view of who was heard, plus a tiny
 Flask HTTP server.
 
+![aggregator data flow](../docs/diagrams/aggregator-flow.svg)
+
+*MQTT in, REST out. The dedup rule is the whole trick: any report of a
+MAC it already knows just refreshes last_seen — and that refresh *is* the
+"still home" signal.*
+
 - `app.py` — everything: MQTT attach on `presence/sighting` +
   `presence/online`, dedup window, REST API, dashboard page.
 - `Dockerfile` / `requirements.txt` — container build.
