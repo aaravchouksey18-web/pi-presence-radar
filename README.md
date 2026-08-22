@@ -1,11 +1,17 @@
 # pi-presence-radar
 
-Knowing who's home without asking anyone. Two ESP8266 boards sit in
-promiscuous mode and listen for 802.11 probe requests — the packets a
-phone broadcasts to find Wi-Fi networks — then post sightings over MQTT
-to the Pi. A small web app turns the stream into a "who's home" list.
+pi-presence-radar tracks devices around the house in real time using only
+local hardware. A NodeMCU runs in promiscuous mode and grabs the raw WiFi
+probe requests sent by nearby smartphones, then sends each logged event
+over MQTT.
 
-> intro: one or two lines in your own words (what it is, why you built it).
+On the receiving end, a Python script on a Raspberry Pi reads the stream
+and renders it to a web interface. This is not production-grade at all. I
+spent a lot of time trying to get the radio interface working right for
+reliable output — it felt like that part would never behave.
+
+This serves as a functional application of embedded network analysis in a
+hands-on way.
 
 ## How it fits together
 
