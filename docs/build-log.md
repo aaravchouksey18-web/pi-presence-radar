@@ -133,6 +133,26 @@ host binds, while docker-published ports get their own accept rule. Fix:
 publish 8000 like mosquitto does, and talk MQTT to mosquitto's bridge IP —
 container-to-container, no firewall in the path. Documented in pi/README.md.)
 
-### Closeout
-Still to do: V3 as a second sensor (board "b"), photo of the rig, README
-intro in my own words, and the phone-home toggle demo writeup with numbers.
+### Closeout (second sniffer live)
+The "still to do" list is done. The V3 is flashed as board "b" — same
+config.h, BOARD_ID "b" baked in at compile, wifi creds untouched — and
+both sniffers run as standalone nodes. Board "a" retired its USB link
+altogether and runs off its own power cable, which is the whole point:
+a sniffer is a board, a flash, and power. Give it power anywhere and it
+joins the stream on its own boot->connect->sniff->publish->reboot cycle.
+Board "b" rides the Pi's USB (own power plus a serial for the console).
+Another node elsewhere in the house is the same recipe: flash + power.
+
+Demo: cycled a phone's wifi a few times with the phone next to board "a".
+The stream follows the toggles — probes land as sightings when the wifi
+is back, and the cycle cadence stays constant (both boards phone home
+every ~45 s, online false->true straight after boot). Over the demo
+session the aggregator saw 13 distinct devices; several were caught by
+both sniffers and show up in /api/who as heard_by:2 — one device, two
+sensors, one row, the dedup rule doing its job. Totals: 20 device/sensor
+pairs, both boards alive on the dashboard.
+
+Board "a" also reports the same Airtel_Omkara MAC every single cycle with
+no gaps — its own reconnect probe at boot; the radio catches the board
+talking to the router. Harmless, but a good reminder that a sniffer hears
+everything near it, itself included.

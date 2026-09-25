@@ -26,7 +26,7 @@ hands-on way.
 
 - sniffers: `firmware/` — ESP8266 sketches (one per board, same core)
 - hub: `pi/` — aggregator + dashboard (Docker on the Pi)
-- docs: `docs/` — build log + block diagrams
+- docs: `docs/` — build log, deployment plan, block diagrams
 - numbers: `measurements/`
 
 ![system architecture](docs/diagrams/architecture.svg)
@@ -38,13 +38,14 @@ the whole chain, top to bottom).*
 
 - 2× NodeMCU (ESP8266) — V1 (CP2102) and V3 (CH340)
 - Raspberry Pi 4B, 8 GB — Mosquitto + aggregator + dashboard
-- (no other parts — the boards sniff passively, powered by USB only)
+- (board "a" now runs on its own power cable, board "b" on the Pi's USB;
+  the battery-backed 12-node plan is in `docs/deployment.md`)
 
 ## Status
 
 - [x] sniffing firmware (promiscuous receive, rxctl at +12)
 - [x] board a flashed + sighting stream live
-- [ ] board b (V3) — hardware swap + flash pending
+- [x] board b (V3) flashed + live — both streams on the dashboard
 - [x] MQTT sightings -> broker
 - [x] aggregator + who's-home dashboard
-- [ ] measurements + photos + README intro (in progress)
+- [ ] measurements + photos (in progress)
