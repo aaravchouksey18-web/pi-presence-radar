@@ -1,6 +1,6 @@
-# pi-presence-radar
+# presence-vigil
 
-pi-presence-radar tracks devices around the house in real time using only
+presence-vigil tracks devices around the house in real time using only
 local hardware. A NodeMCU runs in promiscuous mode and grabs the raw WiFi
 probe requests sent by nearby smartphones, then sends each logged event
 over MQTT.

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 590" role="img" aria-label="pi-presence-radar system architecture">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 590" role="img" aria-label="presence-vigil system architecture">
   <style>
     text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #24292f; }
     .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; rx: 8; }
@@ -57,7 +57,7 @@
   <text class="sub" x="90" y="414">shared backbone · :1883</text>
 
   <rect class="box" x="430" y="370" width="420" height="60"/>
-  <text class="ttl" x="450" y="396">presence-hub — flask + paho-mqtt</text>
+  <text class="ttl" x="450" y="396">presence-vigil — flask + paho-mqtt</text>
   <text class="sub" x="450" y="414">subscribes, dedups in memory · :8000</text>
 
   <line x1="390" y1="400" x2="425" y2="400" stroke="#0969da" stroke-width="1.5" marker-end="url(#ar)"/>

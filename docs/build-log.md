@@ -115,7 +115,7 @@ The Pi gets a process that subscribes to presence/sighting and
 presence/online, keeps an in-memory view (dedup: any report of an already-
 known mac refreshes its last_seen — that refresh IS the "still home"
 signal), and serves the data over HTTP. One python file, flask + paho-mqtt,
-in Docker like the broker: `presence-hub`, published port 8000, MQTT via
+in Docker like the broker: `presence-vigil`, published port 8000, MQTT via
 mosquitto's docker-bridge IP.
 
     GET /api/who    devices heard within the HOME_S window (default 300s)

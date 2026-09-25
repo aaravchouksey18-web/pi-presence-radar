@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pi-presence-radar aggregator + "who's home" dashboard.
+"""presence-vigil aggregator + "who's home" dashboard.
 
 Listens on the shared MQTT broker for presence/sighting and
 presence/online, keeps a small dedup'd in-memory view of who was heard
@@ -174,7 +174,7 @@ def healthz():
 
 PAGE = r"""<!doctype html>
 <html><head><meta charset="utf-8">
-<title>pi-presence-radar — who's home</title>
+<title>presence-vigil — who's home</title>
 <style>
   :root { --bg:#0f1419; --card:#1a222b; --line:#2a3441; --tx:#e6edf3;
           --dim:#7d8b99; --ok:#3fb950; --dead:#f85149; }
@@ -200,7 +200,7 @@ PAGE = r"""<!doctype html>
 </style></head>
 <body>
   <h1>who&rsquo;s home</h1>
-  <div class="sub">pi-presence-radar · ch6 probe sniffer · <span id="clock">–</span></div>
+  <div class="sub">presence-vigil · ch6 probe sniffer · <span id="clock">–</span></div>
   <div class="strip" id="strip"></div>
   <div class="cards" id="cards"></div>
 <script>

@@ -19,9 +19,9 @@ Env: `MQTT_HOST` (default localhost), `MQTT_PORT` (1883), `HOME_S` (300 =
 
 Run on the Pi (mosquitto already lives in Docker on the same host):
 
-    docker build -t presence-hub pi/
-    docker run -d --name presence-hub --restart unless-stopped \
-      -p 8000:8000 -e MQTT_HOST=172.17.0.2 presence-hub
+    docker build -t presence-vigil pi/
+    docker run -d --name presence-vigil --restart unless-stopped \
+      -p 8000:8000 -e MQTT_HOST=172.17.0.2 presence-vigil
 
 `MQTT_HOST` is mosquitto's docker-bridge IP (check with `docker inspect
 mosquitto | grep -i ipaddress`; it's `.2` when mosquitto is the first

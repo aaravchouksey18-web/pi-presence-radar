@@ -1,5 +1,5 @@
 // presence-sniffer.ino
-// Passive 802.11 probe-request sniffer for pi-presence-radar.
+// Passive 802.11 probe-request sniffer for presence-vigil.
 //
 // v3.9 — publish straight from RAM, no RTC. The offset fix (v3.8) works:
 // beacons ~414 and probe requests from real devices now hit the histogram.
