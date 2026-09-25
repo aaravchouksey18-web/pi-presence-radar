@@ -8,6 +8,16 @@ One sketch, two boards. `presence-sniffer/` runs on both NodeMCUs
 *One session: sniff from a cold radio, parse, queue in RAM, report, then
 power-cycle and do it again. ~45 s round trip.*
 
+## setup (first time)
+
+The sketch includes `config.h`, which is gitignored (it holds your WiFi
+password). Copy the example and fill it in before building: `WIFI_SSID`,
+`WIFI_PASS`, `MQTT_HOST` (your Pi), `SNIFF_CHANNEL`, `BOARD_ID`.
+
+```sh
+cp presence-sniffer/config.example.h presence-sniffer/config.h
+```
+
 ## build
 
 ```sh

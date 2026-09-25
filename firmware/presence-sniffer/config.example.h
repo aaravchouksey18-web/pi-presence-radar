@@ -12,8 +12,9 @@
 
 #define BOARD_ID    "a"              // "a" / "b" — one per NodeMCU
 
-// v3 cycle: sniff FIRST from a cold unassociated radio at boot (the only
+// Cycle: sniff FIRST from a cold unassociated radio at boot (the only
 // state where ESP8266 promiscuous actually locks the channel), then
-// associate + report + reboot. Sightings queue in RTC memory across reboots.
+// associate + report + reboot. Sightings publish straight from RAM in the
+// same boot — power-cycling wipes RTC, so a cross-boot queue is a dead end.
 #define SNIFF_SESSION_MS 15000       // radio in capture mode at boot
 #define PH_HOME_MS 30000             // max time associating + reporting

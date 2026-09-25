@@ -1,2 +1,2 @@
-flask>=3.0
-paho-mqtt>=2.0
+flask>=3.0,<4
+paho-mqtt>=2.0,<3

@@ -225,8 +225,9 @@ void loop() {
     return;
   }
 
-  // PH_HOME: associate + report, then reboot whatever happens (the RTC queue
-  // survives, so a failed report retries next cycle).
+  // PH_HOME: associate + report, then reboot whatever happens. Sightings
+  // publish straight from RAM this boot (power-cycling wipes RTC, so a
+  // failed report is dropped this cycle — acceptable on a LAN).
   if (WiFi.status() == WL_CONNECTED && !mqtt.connected()) {
     digitalWrite(LED_BUILTIN, LOW);
     if (mqtt_connect()) {

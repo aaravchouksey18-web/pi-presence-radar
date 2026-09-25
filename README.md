@@ -16,7 +16,7 @@ hands-on way.
 ## How it fits together
 
 ```
-[phone ~500m away]                       [Raspberry Pi 4B]
+[phone a few meters away]                    [Raspberry Pi 4B]
         | probe request                         |
         v                                        |
 [NodeMCU A (V1)] --MQTT--> [Mosquitto] --> [aggregator] --> [web: who's home]
@@ -48,4 +48,4 @@ the whole chain, top to bottom).*
 - [x] board b (V3) flashed + live — both streams on the dashboard
 - [x] MQTT sightings -> broker
 - [x] aggregator + who's-home dashboard
-- [ ] measurements + photos (in progress)
+- [x] measurements logged in `measurements/` · photos kept offline

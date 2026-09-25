@@ -74,8 +74,8 @@ def record_online(board, online):
 
 
 def board_alive(board):
-    """True if the board has proven itself recently: retained online msg,
-    a fresh sighting, or an LWT within ONLINE_S."""
+    """True if the board proved itself recently: retained online message
+    or a fresh sighting within ONLINE_S."""
     now = _now()
     b = boards.get(board) or {}
     return now - b.get("last_online", 0) < ONLINE_S \
@@ -84,13 +84,13 @@ def board_alive(board):
 
 # --- MQTT ------------------------------------------------------------------
 
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code == 0:
         client.subscribe("presence/sighting")
         client.subscribe("presence/online")
         print(f"[mqtt] connected to {MQTT_HOST}:{MQTT_PORT}, listening", flush=True)
     else:
-        print(f"[mqtt] connect failed rc={rc}", flush=True)
+        print(f"[mqtt] connect failed rc={reason_code}", flush=True)
 
 
 def on_message(client, userdata, msg):
@@ -109,7 +109,7 @@ def on_message(client, userdata, msg):
         record_online(board, bool(payload.get("online")))
 
 
-mq = mqtt.Client()
+mq = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mq.on_connect = on_connect
 mq.on_message = on_message
 
@@ -123,8 +123,6 @@ def mqtt_loop():
             print(f"[mqtt] {e}; retrying in 5s", flush=True)
             time.sleep(5)
 
-
-threading.Thread(target=mqtt_loop, daemon=True).start()
 
 # --- HTTP -------------------------------------------------------------------
 
@@ -245,5 +243,10 @@ def index():
     return render_template_string(PAGE)
 
 
-if __name__ == "__main__":
+def main():
+    threading.Thread(target=mqtt_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), threaded=True)
+
+
+if __name__ == "__main__":
+    main()

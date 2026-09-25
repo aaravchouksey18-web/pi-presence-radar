@@ -107,7 +107,8 @@ phone-home demo: toggle phone WiFi next to the board, watch the MAC land.
   beyond brownout suspicion. Candidate fix for a field build: better USB
   source, or a NodeMCU V3 swap, or brownout-detector handling (careful —
   that's what caught the corrupt flash).
-- Board "a" is the V1 on the bench. V3 (board "b") still unflashed.
+- Board "a" is the V1 on the bench — own power cable now. The V3 became
+  board "b"; both live (closeout below).
 - Second sensor = second venue; aggregator dedup is by (mac, board, time).
 
 ### Aggregator + dashboard (same day)
@@ -152,7 +153,7 @@ both sniffers and show up in /api/who as heard_by:2 — one device, two
 sensors, one row, the dedup rule doing its job. Totals: 20 device/sensor
 pairs, both boards alive on the dashboard.
 
-Board "a" also reports the same Airtel_Omkara MAC every single cycle with
+Board "a" also reports the same home-ssid MAC every single cycle with
 no gaps — its own reconnect probe at boot; the radio catches the board
 talking to the router. Harmless, but a good reminder that a sniffer hears
 everything near it, itself included.
